@@ -303,5 +303,18 @@ async def main():
     async with websockets.serve(handle_client, "0.0.0.0", PORT):
         await asyncio.Future()  # run forever
 
+
+
+import os
+
+async def main():
+    # Cloud hosts pass the port via an environment variable. 
+    # If it doesn't exist, fallback to your local PORT.
+    cloud_port = int(os.environ.get("PORT", PORT))
+    
+    print(f"WebSocket Server waiting for connections on port {cloud_port}...")
+    async with websockets.serve(handle_client, "0.0.0.0", cloud_port):
+        await asyncio.Future()  # run forever
+
 if __name__ == "__main__":
     asyncio.run(main())
