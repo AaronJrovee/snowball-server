@@ -17,12 +17,13 @@ class Player:
         self.size = START_SIZE
         self.color = YELLOWISH_WHITE
         self.angle = 0
-        self.vel = 6
+        self.vel = 5  # Using your updated speed
         self.stun_timer = 0
         self.alive = True
         self.ready = False
         self.name = name
-        self.is_moving = False  # Tracks if the mouse is held down
+        self.is_moving = False
+        self.is_bot = False  # Track if this player is AI
 
     def set_movement(self, move_data):
         # Updates direction and whether the mouse is clicked
@@ -130,22 +131,86 @@ class Room:
             start_time = time.time()
 
             # Check ready status & Timer
+            # Check ready status & Timer
             remaining_time = self.lobby_duration
             if not self.game_started:
-                if len(self.players) > 1:
+                if len(self.players) > 0:  # Start timer immediately with 1 player
                     if self.lobby_timer_start is None:
                         self.lobby_timer_start = time.time()
                     
                     elapsed = time.time() - self.lobby_timer_start
                     remaining_time = max(0, int(self.lobby_duration - elapsed))
-                    ready_count = sum(1 for p in self.players.values() if p.ready)
                     
-                    if ready_count == len(self.players) or elapsed >= self.lobby_duration:
+                    human_players = [p for p in self.players.values() if not p.is_bot]
+                    ready_count = sum(1 for p in human_players if p.ready)
+                    
+                    # Start if timer is up, OR (everyone is ready AND there are at least 2 humans)
+                    timer_up = elapsed >= self.lobby_duration
+                    ready_up = len(human_players) >= 2 and ready_count == len(human_players)
+                    
+                    if timer_up or ready_up:
                         self.game_started = True
+                        
+                        # --- BACKFILL BOTS ---
+                        global _id_counter
+                        spots_to_fill = 10 - len(self.players)
+                        for _ in range(spots_to_fill):
+                            bot_id = _id_counter
+                            _id_counter += 1
+                            spawn_pos = self.get_safe_spawn()
+                            bot_name = self.generate_unique_name(bot_id)
+                            
+                            bot = Player(bot_id, spawn_pos, bot_name)
+                            bot.is_bot = True
+                            bot.is_moving = True  # Bots will constantly move
+                            self.players[bot_id] = bot
                 else:
                     self.lobby_timer_start = None
 
             if self.game_started:
+                # --- BOT AI LOGIC ---
+                for p in self.players.values():
+                    if p.is_bot and p.alive:
+                        closest_p = None
+                        min_p_dist = float('inf')
+                        
+                        # Find closest player (human or bot)
+                        for other_p in self.players.values():
+                            if other_p.id != p.id and other_p.alive:
+                                dist = math.hypot(p.x - other_p.x, p.y - other_p.y)
+                                if dist < min_p_dist:
+                                    min_p_dist = dist
+                                    closest_p = other_p
+                        
+                        action_taken = False
+                        if closest_p:
+                            # If bot can capture them, pursue
+                            if p.size >= closest_p.size + 10:
+                                p.angle = math.atan2(closest_p.y - p.y, closest_p.x - p.x)
+                                action_taken = True
+                            # If they can capture bot, flee (point in opposite direction)
+                            elif closest_p.size >= p.size + 10:
+                                p.angle = math.atan2(p.y - closest_p.y, p.x - closest_p.x)
+                                action_taken = True
+                                
+                        # If no immediate threat/prey, seek the closest snow particle
+                        if not action_taken and self.particles:
+                            closest_part = None
+                            min_part_dist = float('inf')
+                            for part in self.particles:
+                                dist = math.hypot(p.x - part.x, p.y - part.y)
+                                if dist < min_part_dist:
+                                    min_part_dist = dist
+                                    closest_part = part
+                            if closest_part:
+                                p.angle = math.atan2(closest_part.y - p.y, closest_part.x - p.x)
+                        
+                        # Ring Avoidance: Override movement if touching the storm edge
+                        dist_to_center = math.hypot(p.x, p.y)
+                        if dist_to_center > self.ring_radius - p.size - 30:
+                            p.angle = math.atan2(-p.y, -p.x) # Turn directly toward map center
+
+                # Apply physics every single frame
                 for p in self.players.values():
                     p.update_position()
 
@@ -238,14 +303,13 @@ _id_counter = 1
 def find_or_create_room():
     global _room_counter
     for room in rooms.values():
-        if not room.game_started and len(room.players) < 4:
+        if not room.game_started and len(room.players) < 10:  # Cap at 10
             return room
 
     new_room = Room(_room_counter)
     rooms[_room_counter] = new_room
     _room_counter += 1
     
-    # FIX: Store a strong reference to the task so it isn't garbage collected
     new_room.task = asyncio.create_task(new_room.room_loop())
     return new_room
 
