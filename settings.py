@@ -1,5 +1,5 @@
 # settings.py
-HOST = "snowball-server.onrender.com" # Change to your server's domain or IP when deploying
+HOST = "https://snowball-server-ywri.onrender.com" # Change to your server's domain or IP when deploying
 PORT = 5555      
 BUFSIZE = 4096
 WIDTH = 800
