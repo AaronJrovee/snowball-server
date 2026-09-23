@@ -183,14 +183,16 @@ class Room:
                                     closest_p = other_p
                         
                         action_taken = False
+                        target_angle = p.angle  # Default to continuing in current direction
+                        
                         if closest_p:
                             # If bot can capture them, pursue
                             if p.size >= closest_p.size + 10:
-                                p.angle = math.atan2(closest_p.y - p.y, closest_p.x - p.x)
+                                target_angle = math.atan2(closest_p.y - p.y, closest_p.x - p.x)
                                 action_taken = True
                             # If they can capture bot, flee (point in opposite direction)
                             elif closest_p.size >= p.size + 10:
-                                p.angle = math.atan2(p.y - closest_p.y, p.x - closest_p.x)
+                                target_angle = math.atan2(p.y - closest_p.y, p.x - closest_p.x)
                                 action_taken = True
                                 
                         # If no immediate threat/prey, seek the closest snow particle
@@ -203,13 +205,25 @@ class Room:
                                     min_part_dist = dist
                                     closest_part = part
                             if closest_part:
-                                p.angle = math.atan2(closest_part.y - p.y, closest_part.x - p.x)
+                                target_angle = math.atan2(closest_part.y - p.y, closest_part.x - p.x)
                         
                         # Ring Avoidance: Override movement if touching the storm edge
                         dist_to_center = math.hypot(p.x, p.y)
                         if dist_to_center > self.ring_radius - p.size - 30:
-                            p.angle = math.atan2(-p.y, -p.x) # Turn directly toward map center
+                            target_angle = math.atan2(-p.y, -p.x) 
 
+                        # --- HUMANIZING THE MOVEMENT ---
+                        # 1. Add occasional random "mistakes" (simulates human mouse jitter)
+                        if random.random() < 0.05:  # 5% chance every frame to slightly twitch
+                            target_angle += random.uniform(-0.5, 0.5)
+
+                        # 2. Smoothly rotate towards the target instead of snapping instantly
+                        # This calculates the shortest turning direction to prevent spinning the wrong way
+                        diff = (target_angle - p.angle + math.pi) % (2 * math.pi) - math.pi
+                        
+                        turn_speed = 0.08  # Max radians the bot can turn per frame (lower = slower turning)
+                        p.angle += max(-turn_speed, min(turn_speed, diff))
+                        
                 # Apply physics every single frame
                 for p in self.players.values():
                     p.update_position()
