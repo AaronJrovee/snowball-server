@@ -158,7 +158,7 @@ class Room:
                             bot_id = _id_counter
                             _id_counter += 1
                             spawn_pos = self.get_safe_spawn()
-                            bot_name = self.generate_unique_name(bot_id)
+                            bot_name = self.generate_unique_name(bot_id) + " [BOT]"
                             
                             bot = Player(bot_id, spawn_pos, bot_name)
                             bot.is_bot = True
@@ -223,7 +223,7 @@ class Room:
                         
                         turn_speed = 0.08  # Max radians the bot can turn per frame (lower = slower turning)
                         p.angle += max(-turn_speed, min(turn_speed, diff))
-                        
+
                 # Apply physics every single frame
                 for p in self.players.values():
                     p.update_position()

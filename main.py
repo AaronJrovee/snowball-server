@@ -1,10 +1,17 @@
-# main.py
 import pygame
 import asyncio
-import websockets
 import json
 import math
+import sys
+import importlib
 from settings import *
+
+if sys.platform == "emscripten":
+    import platform
+    window = platform.window
+else:
+    ws_name = "web" + "sockets"
+    websockets = importlib.import_module(ws_name)
 
 pygame.init()
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
@@ -26,57 +33,109 @@ last_click_time = 0
 click_count = 0
 CLICK_WINDOW = 250
 
+msg_queue = [] 
+
+def on_message(event):
+    # Force the JavaScript payload into a native Python string immediately
+    msg_queue.append(str(event.data))
+
 async def send(data):
     global client
-    if client:
+    # 1. Safely check the JavaScript proxy
+    if client is not None:
         try:
             msg = json.dumps(data)
-            await client.send(msg)
-        except:
-            pass
-
+            if sys.platform == "emscripten":
+                # 2. Use the injected pure JS helper to cross the language barrier
+                window.send_ws(str(msg))
+            else:
+                await client.send(msg)
+        except Exception as e:
+            print(f"Send error: {e}")
+            
 async def connect_to_server():
     global client, my_id, app_state
     
+    url = f"wss://{HOST}" if "onrender.com" in HOST else f"ws://{HOST}:{PORT}"
+    
     try:
-        # Connect dynamically based on deployment
-        if "onrender.com" in HOST:
-            client = await websockets.connect(f"wss://{HOST}")
+        if sys.platform == "emscripten":
+            client = window.eval(f"new WebSocket('{url}')")
+            
+            # 1. Store the socket globally so JS doesn't delete it
+            window.ws_client = client
+            window.ws_on_message = on_message
+            client.onmessage = window.ws_on_message
+            
+            # 2. Inject a pure JavaScript function to handle sending safely
+            window.eval("""
+            window.send_ws = function(msg) {
+                if (window.ws_client && window.ws_client.readyState === 1) {
+                    window.ws_client.send(msg);
+                }
+            }
+            """)
+            
+            while client.readyState == 0:
+                await asyncio.sleep(0.1)
+                
+            if client.readyState != 1:
+                raise Exception("Server is offline or unreachable.")
+                
+            timeout = 0
+            while len(msg_queue) == 0:
+                if client.readyState != 1:
+                    raise Exception("Connection closed unexpectedly.")
+                await asyncio.sleep(0.1)
+                timeout += 0.1
+                if timeout > 10: 
+                    raise Exception("Timed out waiting for server response.")
+            
+            my_id = int(msg_queue.pop(0))
         else:
-            client = await websockets.connect(f"ws://{HOST}:{PORT}")
-        
-        raw_id = await client.recv()
-        my_id = int(raw_id)
+            client = await websockets.connect(url)
+            my_id = int(await client.recv())
 
         app_state = "GAME"
-        # Start the background listener loop asynchronously
         asyncio.create_task(receive_data())
     except Exception as e:
-        print(f"Could not connect to server: {e}")
+        print(f"Could not connect: {e}")
         client = None
         app_state = "MENU"
 
-async def receive_data():
-    global gamestate, app_state, winner_announcement, winner_display_start, client
+def process_payload(data):
+    global gamestate, app_state, winner_announcement, winner_display_start
     try:
-        async for data in client:
-            if app_state not in ["GAME", "WINNER"]:
-                break
-            
-            payload = json.loads(data)
-            if payload.get("command") == "game_over":
-                winner_name = payload.get("winner_name", "Nobody")
-                winner_announcement = f"{winner_name} Wins!"
-                winner_display_start = pygame.time.get_ticks()
-                app_state = "WINNER"
-            else:
-                gamestate = payload
-    except Exception:
-        pass
-    finally:
-        if client:
-            await client.close()
-            client = None
+        payload = json.loads(data)
+        if payload.get("command") == "game_over":
+            winner_name = payload.get("winner_name", "Nobody")
+            winner_announcement = f"{winner_name} Wins!"
+            winner_display_start = pygame.time.get_ticks()
+            app_state = "WINNER"
+        else:
+            gamestate = payload
+    except Exception as e:
+        print(f"Failed to parse payload: {e}")
+
+async def receive_data():
+    global app_state, client
+    if sys.platform == "emscripten":
+        while app_state in ["GAME", "WINNER"]:
+            while len(msg_queue) > 0:
+                try:
+                    # Process packets safely so one error doesn't kill the background loop
+                    process_payload(msg_queue.pop(0))
+                except Exception as e:
+                    print(f"Queue error: {e}")
+            await asyncio.sleep(0.01)
+    else:
+        try:
+            async for data in client:
+                if app_state not in ["GAME", "WINNER"]:
+                    break
+                process_payload(data)
+        except Exception:
+            pass
 
 def draw_menu():
     screen.fill(BG_COLOR)
@@ -88,6 +147,13 @@ def draw_menu():
     btn_text = font_large.render("PLAY", True, WHITE)
     screen.blit(btn_text, (btn_rect.centerx - btn_text.get_width() // 2, btn_rect.centery - btn_text.get_height() // 2))
     return btn_rect
+
+def draw_connecting():
+    screen.fill(BG_COLOR)
+    text = font_large.render("Waking up server...", True, BLACK)
+    sub = font.render("(This can take up to 50 seconds)", True, (100, 100, 100))
+    screen.blit(text, (WIDTH // 2 - text.get_width() // 2, HEIGHT // 2 - 20))
+    screen.blit(sub, (WIDTH // 2 - sub.get_width() // 2, HEIGHT // 2 + 30))
 
 def draw_winner():
     screen.fill(BG_COLOR)
@@ -104,51 +170,82 @@ def draw_game():
         return
 
     me = next((p for p in gamestate.get('players', []) if p['id'] == my_id), None)
-    cam_x, cam_y = 0, 0
+    target_x, target_y = 0, 0
+    target_size = START_SIZE
+    is_spectating = False
+    spectated_name = ""
     
+    # 1. Determine who the camera is following
     if me and me['alive']:
-        cam_x = me['x'] - WIDTH // 2
-        cam_y = me['y'] - HEIGHT // 2
+        target_x = me['x']
+        target_y = me['y']
+        target_size = me['size']
     elif gamestate.get('started'):
         alive_players = [p for p in gamestate.get('players', []) if p['alive']]
         if alive_players:
             top_player = max(alive_players, key=lambda p: p['size'])
-            cam_x = top_player['x'] - WIDTH // 2
-            cam_y = top_player['y'] - HEIGHT // 2
-            
-            spec_txt = font_large.render(f"SPECTATING: {top_player.get('name', 'Unknown')}", True, RED)
-            screen.blit(spec_txt, (WIDTH // 2 - spec_txt.get_width() // 2, HEIGHT - 60))
+            target_x = top_player['x']
+            target_y = top_player['y']
+            target_size = top_player['size']
+            is_spectating = True
+            spectated_name = top_player.get('name', 'Unknown')
 
+    # 2. Calculate dynamic zoom factor (starts zooming out when size > 80)
+    ZOOM_THRESHOLD = 80
+    zoom = 1.0
+    if target_size > ZOOM_THRESHOLD:
+        zoom = ZOOM_THRESHOLD / target_size
+
+    # Helper function to convert map coordinates to scaled screen coordinates
+    def to_screen(world_x, world_y):
+        return (
+            int((world_x - target_x) * zoom + WIDTH // 2),
+            int((world_y - target_y) * zoom + HEIGHT // 2)
+        )
+
+    # 3. Draw game objects using the zoom multiplier
     ring_r = gamestate.get('ring', 2000)
-    pygame.draw.circle(screen, ORANGE, (-cam_x, -cam_y), ring_r, 5)
+    center_screen = to_screen(0, 0)
+    pygame.draw.circle(screen, ORANGE, center_screen, max(1, int(ring_r * zoom)), max(1, int(5 * zoom)))
 
     for p in gamestate.get('particles', []):
-        pygame.draw.circle(screen, WHITE, (p[0] - cam_x, p[1] - cam_y), p[2])
+        sx, sy = to_screen(p[0], p[1])
+        pygame.draw.circle(screen, WHITE, (sx, sy), max(1, int(p[2] * zoom)))
 
     for p in gamestate.get('projectiles', []):
-        pygame.draw.circle(screen, (255, 255, 255), (p[0] - cam_x, p[1] - cam_y), p[2])
+        sx, sy = to_screen(p[0], p[1])
+        pygame.draw.circle(screen, (255, 255, 255), (sx, sy), max(1, int(p[2] * zoom)))
 
     for p in gamestate.get('players', []):
         if not p['alive']:
             continue
 
-        px, py = p['x'] - cam_x, p['y'] - cam_y
+        sx, sy = to_screen(p['x'], p['y'])
+        scaled_size = max(1, int(p['size'] * zoom))
+        
         color = YELLOWISH_WHITE if p['id'] == my_id else (240, 240, 200)
-        pygame.draw.circle(screen, color, (px, py), p['size'])
+        pygame.draw.circle(screen, color, (sx, sy), scaled_size)
 
+        # Scale the directional pointer triangle
         angle = p['angle']
-        tip_x = px + math.cos(angle) * (p['size'] + 25)
-        tip_y = py + math.sin(angle) * (p['size'] + 25)
-        base_left_x = px + math.cos(angle - 0.5) * (p['size'] + 15)
-        base_left_y = py + math.sin(angle - 0.5) * (p['size'] + 15)
-        base_right_x = px + math.cos(angle + 0.5) * (p['size'] + 15)
-        base_right_y = py + math.sin(angle + 0.5) * (p['size'] + 15)
+        tip_x = sx + math.cos(angle) * (scaled_size + 25 * zoom)
+        tip_y = sy + math.sin(angle) * (scaled_size + 25 * zoom)
+        base_left_x = sx + math.cos(angle - 0.5) * (scaled_size + 15 * zoom)
+        base_left_y = sy + math.sin(angle - 0.5) * (scaled_size + 15 * zoom)
+        base_right_x = sx + math.cos(angle + 0.5) * (scaled_size + 15 * zoom)
+        base_right_y = sy + math.sin(angle + 0.5) * (scaled_size + 15 * zoom)
         pygame.draw.polygon(screen, BLACK, [(tip_x, tip_y), (base_left_x, base_left_y), (base_right_x, base_right_y)])
 
+        # Draw names (kept at a constant font size for readability)
         name_text = p.get('name', 'Unknown')
         name_surface = font_small.render(name_text, True, BLACK)
-        text_rect = name_surface.get_rect(center=(px, py - p['size'] - 15))
+        text_rect = name_surface.get_rect(center=(sx, sy - scaled_size - 15))
         screen.blit(name_surface, text_rect)
+
+    # 4. Draw fixed UI Overlays (Unscaled)
+    if is_spectating:
+        spec_txt = font_large.render(f"SPECTATING: {spectated_name}", True, RED)
+        screen.blit(spec_txt, (WIDTH // 2 - spec_txt.get_width() // 2, HEIGHT - 60))
 
     if not gamestate.get('started'):
         s = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
@@ -217,12 +314,15 @@ async def main():
                 running = False
 
             if app_state == "MENU":
-                if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                    btn_rect = pygame.Rect(WIDTH // 2 - 100, HEIGHT // 2, 200, 60)
-                    if btn_rect.collidepoint(event.pos):
-                        # Use create_task for background networking
-                        asyncio.create_task(connect_to_server())
+                # Allow Spacebar OR clicking anywhere to start
+                is_click = (event.type == pygame.MOUSEBUTTONDOWN and event.button == 1)
+                is_space = (event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE)
+                
+                if is_click or is_space:
+                    app_state = "CONNECTING"
+                    asyncio.create_task(connect_to_server())
 
+            
             elif app_state == "GAME":
                 if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
                     asyncio.create_task(send({"command": "ready"}))
@@ -241,9 +341,11 @@ async def main():
                         click_count = 1
                     last_click_time = now
 
+        # Update rendering block to handle the new state
         if app_state == "MENU":
             draw_menu()
-
+        elif app_state == "CONNECTING":
+            draw_connecting()
         elif app_state == "GAME":
             now = pygame.time.get_ticks()
             if click_count > 0 and (now - last_click_time >= CLICK_WINDOW):
@@ -272,12 +374,13 @@ async def main():
 
         pygame.display.flip()
         
-        # --- CRITICAL PYGBAG REQUIREMENT ---
-        # Yields control to the web browser so it has time to render
         await asyncio.sleep(0)
 
     if client:
-        await client.close()
+        try:
+            await client.close()
+        except:
+            pass
     pygame.quit()
 
 if __name__ == "__main__":
