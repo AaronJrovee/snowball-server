@@ -1,10 +1,10 @@
-# server.py
 import asyncio
 import websockets
 import json
 import random
 import math
 import time
+import os
 from settings import *
 
 PREFIXES = ["Cool", "Frozen", "Ice", "Snow", "Brawl", "Rolling", "Winter", "Cold", "Awesome", "Amazing", "Throwing", "Super", "New"]
@@ -17,34 +17,62 @@ class Player:
         self.size = START_SIZE
         self.color = YELLOWISH_WHITE
         self.angle = 0
-        self.vel = 5  # Using your updated speed
+        self.vel = 5  
         self.stun_timer = 0
         self.alive = True
         self.ready = False
         self.name = name
         self.is_moving = False
-        self.is_bot = False  # Track if this player is AI
-
+        self.is_bot = False  
+        
+        # New Aiming & Knockback Variables
+        self.is_aiming = False
+        self.aim_angle = 0
+        self.kb_dx = 0
+        self.kb_dy = 0
+        self.last_shoot_time = 0  # Add this!
     def set_movement(self, move_data):
-        # Updates direction and whether the mouse is clicked
         self.is_moving = move_data.get('moving', False)
         if 'angle' in move_data:
             self.angle = move_data['angle']
+            
+        self.is_aiming = move_data.get('is_aiming', False)
+        if 'aim_angle' in move_data:
+            self.aim_angle = move_data['aim_angle']
 
     def update_position(self):
-        # Applies continuous forward motion if the mouse is currently held
         if not self.alive:
             return
+
+        # 1. Apply Knockback Physics First
+        self.x += self.kb_dx
+        self.y += self.kb_dy
+        
+        # Friction/Decay for knockback
+        self.kb_dx *= 0.85 
+        self.kb_dy *= 0.85
+
+        # 2. Apply Standard Movement (if not stunned)
         if self.stun_timer > 0:
             self.stun_timer -= 1
-            return
-        if self.is_moving:
-            dx = math.cos(self.angle) * self.vel
-            dy = math.sin(self.angle) * self.vel
-            self.x = max(-MAP_SIZE, min(MAP_SIZE, self.x + dx))
-            self.y = max(-MAP_SIZE, min(MAP_SIZE, self.y + dy))
+        else:
+            if self.is_aiming:
+                # Drift in the exact opposite direction at 50% speed
+                dx = math.cos(self.aim_angle + math.pi) * (self.vel * 0.5)
+                dy = math.sin(self.aim_angle + math.pi) * (self.vel * 0.5)
+                self.x += dx
+                self.y += dy
+            elif self.is_moving:
+                # Normal forward movement
+                dx = math.cos(self.angle) * self.vel
+                dy = math.sin(self.angle) * self.vel
+                self.x += dx
+                self.y += dy
 
-    # This was missing! The server needs this to send player data to the client.
+        # Clamp to Map Boundaries
+        self.x = max(-MAP_SIZE, min(MAP_SIZE, self.x))
+        self.y = max(-MAP_SIZE, min(MAP_SIZE, self.y))
+
     def to_dict(self):
         return {
             "id": self.id,
@@ -54,8 +82,11 @@ class Player:
             "angle": self.angle,
             "alive": self.alive,
             "ready": self.ready,
-            "name": self.name
+            "name": self.name,
+            "is_aiming": self.is_aiming,
+            "aim_angle": self.aim_angle
         }
+
 class Particle:
     def __init__(self, x, y, size=5):
         self.x = x
@@ -119,7 +150,6 @@ class Room:
 
     async def broadcast(self, data):
         msg = json.dumps(data)
-        # Send to each client individually
         for ws in list(self.conns.values()):
             try:
                 await ws.send(msg)
@@ -128,13 +158,9 @@ class Room:
 
     async def room_loop(self):
         while self.running:
-            start_time = time.time()
-
-            # Check ready status & Timer
-            # Check ready status & Timer
             remaining_time = self.lobby_duration
             if not self.game_started:
-                if len(self.players) > 0:  # Start timer immediately with 1 player
+                if len(self.players) > 0:  
                     if self.lobby_timer_start is None:
                         self.lobby_timer_start = time.time()
                     
@@ -144,14 +170,12 @@ class Room:
                     human_players = [p for p in self.players.values() if not p.is_bot]
                     ready_count = sum(1 for p in human_players if p.ready)
                     
-                    # Start if timer is up, OR (everyone is ready AND there are at least 2 humans)
                     timer_up = elapsed >= self.lobby_duration
-                    ready_up = len(human_players) >= 2 and ready_count == len(human_players)
+                    ready_up = len(human_players) >= 1 and ready_count == len(human_players)
                     
                     if timer_up or ready_up:
                         self.game_started = True
                         
-                        # --- BACKFILL BOTS ---
                         global _id_counter
                         spots_to_fill = 10 - len(self.players)
                         for _ in range(spots_to_fill):
@@ -162,19 +186,17 @@ class Room:
                             
                             bot = Player(bot_id, spawn_pos, bot_name)
                             bot.is_bot = True
-                            bot.is_moving = True  # Bots will constantly move
+                            bot.is_moving = True  
                             self.players[bot_id] = bot
                 else:
                     self.lobby_timer_start = None
 
             if self.game_started:
-                # --- BOT AI LOGIC ---
                 for p in self.players.values():
                     if p.is_bot and p.alive:
                         closest_p = None
                         min_p_dist = float('inf')
                         
-                        # Find closest player (human or bot)
                         for other_p in self.players.values():
                             if other_p.id != p.id and other_p.alive:
                                 dist = math.hypot(p.x - other_p.x, p.y - other_p.y)
@@ -183,19 +205,17 @@ class Room:
                                     closest_p = other_p
                         
                         action_taken = False
-                        target_angle = p.angle  # Default to continuing in current direction
+                        target_angle = p.angle  
                         
                         if closest_p:
-                            # If bot can capture them, pursue
-                            if p.size >= closest_p.size + 10:
+                            # Use 1.25 rule for bot target evaluation
+                            if p.size >= closest_p.size * 1.25:
                                 target_angle = math.atan2(closest_p.y - p.y, closest_p.x - p.x)
                                 action_taken = True
-                            # If they can capture bot, flee (point in opposite direction)
-                            elif closest_p.size >= p.size + 10:
+                            elif closest_p.size >= p.size * 1.25:
                                 target_angle = math.atan2(p.y - closest_p.y, p.x - closest_p.x)
                                 action_taken = True
                                 
-                        # If no immediate threat/prey, seek the closest snow particle
                         if not action_taken and self.particles:
                             closest_part = None
                             min_part_dist = float('inf')
@@ -207,27 +227,19 @@ class Room:
                             if closest_part:
                                 target_angle = math.atan2(closest_part.y - p.y, closest_part.x - p.x)
                         
-                        # Ring Avoidance: Override movement if touching the storm edge
                         dist_to_center = math.hypot(p.x, p.y)
                         if dist_to_center > self.ring_radius - p.size - 30:
                             target_angle = math.atan2(-p.y, -p.x) 
 
-                        # --- HUMANIZING THE MOVEMENT ---
-                        # 1. Add occasional random "mistakes" (simulates human mouse jitter)
-                        if random.random() < 0.05:  # 5% chance every frame to slightly twitch
+                        if random.random() < 0.05:  
                             target_angle += random.uniform(-0.5, 0.5)
 
-                        # 2. Smoothly rotate towards the target instead of snapping instantly
-                        # This calculates the shortest turning direction to prevent spinning the wrong way
                         diff = (target_angle - p.angle + math.pi) % (2 * math.pi) - math.pi
-                        
-                        turn_speed = 0.08  # Max radians the bot can turn per frame (lower = slower turning)
+                        turn_speed = 0.08  
                         p.angle += max(-turn_speed, min(turn_speed, diff))
 
-                # Apply physics every single frame
                 for p in self.players.values():
                     p.update_position()
-
 
                 self.ring_radius -= RING_SHRINK_RATE
                 if self.ring_radius < 0:
@@ -254,6 +266,7 @@ class Room:
                             p.size += part.size * 0.1
                             self.particles.remove(part)
 
+                    # Projectile Collisions & Knockback
                     for proj in self.projectiles[:]:
                         if proj.owner_id != pid:
                             if math.hypot(p.x - proj.x, p.y - proj.y) < p.size + proj.size:
@@ -264,12 +277,17 @@ class Room:
                                         self.particles.append(Particle(p.x, p.y, p.size / 5))
                                 else:
                                     p.stun_timer = int(proj.size * STUN_MULTIPLIER)
+                                    # Massive impulse knockback based on projectile size
+                                    p.kb_dx = math.cos(proj.angle) * (proj.size * 1.5)
+                                    p.kb_dy = math.sin(proj.angle) * (proj.size * 1.5)
 
+                    # Player Consumptions (1.25x Rule)
                     for other_id, other_p in self.players.items():
                         if pid != other_id and other_p.alive:
-                            if math.hypot(p.x - other_p.x, p.y - other_p.y) < p.size and p.size >= other_p.size + 10:
-                                other_p.alive = False
-                                p.size += other_p.size * 0.5
+                            if math.hypot(p.x - other_p.x, p.y - other_p.y) < p.size:
+                                if p.size >= other_p.size * 1.25:
+                                    other_p.alive = False
+                                    p.size += other_p.size * 0.5
 
                 if len(self.particles) < MAX_PARTICLES:
                     self.particles.append(Particle(random.randint(-int(self.ring_radius), int(self.ring_radius)), random.randint(-int(self.ring_radius), int(self.ring_radius))))
@@ -295,7 +313,6 @@ class Room:
                         del rooms[self.room_id]
                     break
 
-            # COMPRESSED PAYLOAD: Send arrays instead of dicts for particles/projectiles
             state = {
                 "players": [p.to_dict() for p in self.players.values()],
                 "particles": [[int(pt.x), int(pt.y), int(pt.size)] for pt in self.particles],
@@ -305,10 +322,7 @@ class Room:
                 "lobby_time": remaining_time
             }
             await self.broadcast(state)
-
-            # Drop the server broadcast rate to 30 tick (Client still renders at 60fps)
             await asyncio.sleep(1 / 30)
-
 
 rooms = {}
 _room_counter = 1
@@ -317,7 +331,7 @@ _id_counter = 1
 def find_or_create_room():
     global _room_counter
     for room in rooms.values():
-        if not room.game_started and len(room.players) < 10:  # Cap at 10
+        if not room.game_started and len(room.players) < 10: 
             return room
 
     new_room = Room(_room_counter)
@@ -336,10 +350,7 @@ async def handle_client(websocket):
     spawn_pos = room.get_safe_spawn()
     p_name = room.generate_unique_name(p_id)
 
-    # FIX: Send the client ID FIRST
     await websocket.send(str(p_id))
-
-    # THEN add them to the room so the background loop can safely see them
     room.conns[p_id] = websocket
     room.players[p_id] = Player(p_id, spawn_pos, p_name)
 
@@ -354,12 +365,22 @@ async def handle_client(websocket):
                     if cmd['command'] == 'ready':
                         p.ready = True
                     elif cmd['command'] == 'shoot' and p.alive:
-                        cost_ratio = 0.25 if cmd['type'] == 1 else 0.5
-                        if p.size >= 20:
-                            shot_size = p.size * cost_ratio
-                            p.size -= shot_size
-                            proj = Projectile(p_id, p.x, p.y, p.angle, shot_size)
-                            room.projectiles.append(proj)
+                        current_time = time.time()
+                        if current_time - p.last_shoot_time >= 10:
+                            cost = p.size / 8
+                            # 1/8 Cost constraint check
+                            if p.size - cost >= START_SIZE:
+                                p.last_shoot_time = current_time # Reset the server timer
+                                p.size -= cost
+                                proj_size = (p.size + cost) / 4 
+                                
+                                # Spawn the projectile right at the edge of the player to prevent instant self-collision
+                                spawn_dist = (p.size + proj_size) + 5
+                                px = p.x + math.cos(cmd['angle']) * spawn_dist
+                                py = p.y + math.sin(cmd['angle']) * spawn_dist
+                                
+                                proj = Projectile(p_id, px, py, cmd['angle'], proj_size)
+                                room.projectiles.append(proj)
                     elif cmd['command'] == 'move':
                         p.set_movement(cmd)
     except websockets.exceptions.ConnectionClosed:
@@ -376,23 +397,10 @@ async def handle_client(websocket):
                 del rooms[room.room_id]
 
 async def main():
-    print(f"WebSocket Server waiting for connections on port {PORT}...")
-    # Bind to 0.0.0.0 to allow external connections
-    async with websockets.serve(handle_client, "0.0.0.0", PORT):
-        await asyncio.Future()  # run forever
-
-
-
-import os
-
-async def main():
-    # Cloud hosts pass the port via an environment variable. 
-    # If it doesn't exist, fallback to your local PORT.
     cloud_port = int(os.environ.get("PORT", PORT))
-    
     print(f"WebSocket Server waiting for connections on port {cloud_port}...")
     async with websockets.serve(handle_client, "0.0.0.0", cloud_port):
-        await asyncio.Future()  # run forever
+        await asyncio.Future()
 
 if __name__ == "__main__":
     asyncio.run(main())
