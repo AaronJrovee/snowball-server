@@ -25,12 +25,12 @@ class Player:
         self.is_moving = False
         self.is_bot = False  
         
-        # New Aiming & Knockback Variables
         self.is_aiming = False
         self.aim_angle = 0
         self.kb_dx = 0
         self.kb_dy = 0
-        self.last_shoot_time = 0  # Add this!
+        self.last_shoot_time = 0 
+        
     def set_movement(self, move_data):
         self.is_moving = move_data.get('moving', False)
         if 'angle' in move_data:
@@ -44,34 +44,31 @@ class Player:
         if not self.alive:
             return
 
-        # 1. Apply Knockback Physics First
+        # Apply Knockback Physics First
         self.x += self.kb_dx
         self.y += self.kb_dy
-        
-        # Friction/Decay for knockback
         self.kb_dx *= 0.85 
         self.kb_dy *= 0.85
 
-        # 2. Apply Standard Movement (if not stunned)
+        # FEATURE 2: Dynamic Speed Scaling
+        speed_modifier = max(0.2, START_SIZE / max(START_SIZE, self.size))
+        active_vel = self.vel * speed_modifier
+
         if self.stun_timer > 0:
             self.stun_timer -= 1
         else:
             if self.is_aiming:
-                # Drift in the exact opposite direction at 50% speed
-                dx = math.cos(self.aim_angle + math.pi) * (self.vel * 0.5)
-                dy = math.sin(self.aim_angle + math.pi) * (self.vel * 0.5)
+                dx = math.cos(self.aim_angle + math.pi) * (active_vel * 0.5)
+                dy = math.sin(self.aim_angle + math.pi) * (active_vel * 0.5)
                 self.x += dx
                 self.y += dy
             elif self.is_moving:
-                # Normal forward movement
-                dx = math.cos(self.angle) * self.vel
-                dy = math.sin(self.angle) * self.vel
+                dx = math.cos(self.angle) * active_vel
+                dy = math.sin(self.angle) * active_vel
                 self.x += dx
                 self.y += dy
 
-        # Clamp to Map Boundaries
-        self.x = max(-MAP_SIZE, min(MAP_SIZE, self.x))
-        self.y = max(-MAP_SIZE, min(MAP_SIZE, self.y))
+        # FEATURE 5: Free-roaming movement (Removed the previous map boundary clamp)
 
     def to_dict(self):
         return {
@@ -115,14 +112,18 @@ class Room:
         self.players = {}
         self.conns = {}
         self.projectiles = []
-        self.particles = [
-            Particle(random.randint(-MAP_SIZE, MAP_SIZE), random.randint(-MAP_SIZE, MAP_SIZE))
-            for _ in range(MAX_PARTICLES)
-        ]
+        self.ring_radius = MAP_SIZE * 1.5
+        
+        # FEATURE 4: Spawn initial particles strictly inside the ring using polar coordinates
+        self.particles = []
+        for _ in range(MAX_PARTICLES):
+            angle = random.uniform(0, math.pi * 2)
+            r = math.sqrt(random.uniform(0, 1)) * self.ring_radius
+            self.particles.append(Particle(r * math.cos(angle), r * math.sin(angle), 5))
+            
         self.game_started = False
         self.lobby_timer_start = None
         self.lobby_duration = 60
-        self.ring_radius = MAP_SIZE * 1.5
         self.running = True
 
     def generate_unique_name(self, p_id):
@@ -138,8 +139,10 @@ class Room:
 
     def get_safe_spawn(self):
         while True:
-            rx = random.randint(-MAP_SIZE, MAP_SIZE)
-            ry = random.randint(-MAP_SIZE, MAP_SIZE)
+            # Force spawns to be inside the safe ring
+            spawn_limit = int(self.ring_radius * 0.8)
+            rx = random.randint(-spawn_limit, spawn_limit)
+            ry = random.randint(-spawn_limit, spawn_limit)
             safe = True
             for p in self.players.values():
                 if math.hypot(rx - p.x, ry - p.y) < (START_SIZE * 3):
@@ -147,6 +150,16 @@ class Room:
                     break
             if safe:
                 return rx, ry
+
+    # FEATURE 3: Helper function to spawn collectible particle bursts instead of instant growth
+    def spawn_burst(self, x, y, total_value, radius):
+        num_particles = max(1, int(total_value / 5))
+        for _ in range(num_particles):
+            angle = random.uniform(0, math.pi * 2)
+            r = random.uniform(0, radius)
+            px = x + math.cos(angle) * r
+            py = y + math.sin(angle) * r
+            self.particles.append(Particle(px, py, 5))
 
     async def broadcast(self, data):
         msg = json.dumps(data)
@@ -208,7 +221,6 @@ class Room:
                         target_angle = p.angle  
                         
                         if closest_p:
-                            # Use 1.25 rule for bot target evaluation
                             if p.size >= closest_p.size * 1.25:
                                 target_angle = math.atan2(closest_p.y - p.y, closest_p.x - p.x)
                                 action_taken = True
@@ -249,13 +261,33 @@ class Room:
                     proj.update()
                     if proj.life <= 0:
                         self.projectiles.remove(proj)
-                        for _ in range(3):
-                            self.particles.append(Particle(proj.x + random.randint(-10, 10), proj.y + random.randint(-10, 10), proj.size / 3))
+                        self.spawn_burst(proj.x, proj.y, proj.size, proj.size / 2)
+
+                # FEATURE 3: Projectile vs Projectile collisions
+                for i, p1 in enumerate(self.projectiles):
+                    if p1.life <= 0: continue
+                    for p2 in self.projectiles[i+1:]:
+                        if p2.life <= 0: continue
+                        if math.hypot(p1.x - p2.x, p1.y - p2.y) < p1.size + p2.size:
+                            if p1.size >= p2.size * 1.25:
+                                p1.size -= p2.size * 0.25
+                                p2.life = 0
+                                self.spawn_burst(p2.x, p2.y, p2.size, p2.size)
+                            elif p2.size >= p1.size * 1.25:
+                                p2.size -= p1.size * 0.25
+                                p1.life = 0
+                                self.spawn_burst(p1.x, p1.y, p1.size, p1.size)
+                            else:
+                                p1.life = 0
+                                p2.life = 0
+                                self.spawn_burst(p1.x, p1.y, p1.size, p1.size)
+                                self.spawn_burst(p2.x, p2.y, p2.size, p2.size)
 
                 for pid, p in self.players.items():
                     if not p.alive:
                         continue
 
+                    # The ring melting logic remains unchanged
                     if math.sqrt(p.x**2 + p.y**2) > self.ring_radius:
                         p.size -= 0.5
                         if p.size <= 5:
@@ -266,31 +298,40 @@ class Room:
                             p.size += part.size * 0.1
                             self.particles.remove(part)
 
-                    # Projectile Collisions & Knockback
+                    # Projectile vs Player Collisions
                     for proj in self.projectiles[:]:
-                        if proj.owner_id != pid:
+                        if proj.owner_id != pid and proj.life > 0:
                             if math.hypot(p.x - proj.x, p.y - proj.y) < p.size + proj.size:
-                                self.projectiles.remove(proj)
+                                proj.life = 0 
                                 if proj.size > p.size:
                                     p.alive = False
-                                    for _ in range(5):
-                                        self.particles.append(Particle(p.x, p.y, p.size / 5))
+                                    self.spawn_burst(p.x, p.y, p.size, p.size)
                                 else:
-                                    p.stun_timer = int(proj.size * STUN_MULTIPLIER)
-                                    # Massive impulse knockback based on projectile size
-                                    p.kb_dx = math.cos(proj.angle) * (proj.size * 1.5)
-                                    p.kb_dy = math.sin(proj.angle) * (proj.size * 1.5)
+                                    # FEATURE 1: Scale stun and knockback inversely by opponent size
+                                    size_ratio = max(0.1, proj.size / p.size)
+                                    p.stun_timer = int(proj.size * STUN_MULTIPLIER * size_ratio)
+                                    p.kb_dx = math.cos(proj.angle) * (proj.size * 1.5 * size_ratio)
+                                    p.kb_dy = math.sin(proj.angle) * (proj.size * 1.5 * size_ratio)
 
-                    # Player Consumptions (1.25x Rule)
+                    # Player Consumptions
                     for other_id, other_p in self.players.items():
                         if pid != other_id and other_p.alive:
                             if math.hypot(p.x - other_p.x, p.y - other_p.y) < p.size:
                                 if p.size >= other_p.size * 1.25:
                                     other_p.alive = False
-                                    p.size += other_p.size * 0.5
+                                    # FEATURE 3: Generate collectible particles instead of instant growth
+                                    self.spawn_burst(other_p.x, other_p.y, other_p.size * 0.5, other_p.size)
 
-                if len(self.particles) < MAX_PARTICLES:
-                    self.particles.append(Particle(random.randint(-int(self.ring_radius), int(self.ring_radius)), random.randint(-int(self.ring_radius), int(self.ring_radius))))
+                # FEATURE 4: Snow Particle Culling and Respawning
+                for part in self.particles[:]:
+                    if math.hypot(part.x, part.y) > self.ring_radius:
+                        self.particles.remove(part)
+
+                while len(self.particles) < MAX_PARTICLES:
+                    angle = random.uniform(0, math.pi * 2)
+                    # Use sqrt for an even distribution inside the circular ring
+                    r = math.sqrt(random.uniform(0, 1)) * max(1, self.ring_radius)
+                    self.particles.append(Particle(r * math.cos(angle), r * math.sin(angle), 5))
 
                 alive_players = [p for p in self.players.values() if p.alive]
                 if len(alive_players) <= 1:
@@ -368,13 +409,11 @@ async def handle_client(websocket):
                         current_time = time.time()
                         if current_time - p.last_shoot_time >= 10:
                             cost = p.size / 8
-                            # 1/8 Cost constraint check
                             if p.size - cost >= START_SIZE:
-                                p.last_shoot_time = current_time # Reset the server timer
+                                p.last_shoot_time = current_time 
                                 p.size -= cost
                                 proj_size = (p.size + cost) / 4 
                                 
-                                # Spawn the projectile right at the edge of the player to prevent instant self-collision
                                 spawn_dist = (p.size + proj_size) + 5
                                 px = p.x + math.cos(cmd['angle']) * spawn_dist
                                 py = p.y + math.sin(cmd['angle']) * spawn_dist
