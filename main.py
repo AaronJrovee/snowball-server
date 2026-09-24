@@ -29,29 +29,28 @@ gamestate = {}
 winner_announcement = ""
 winner_display_start = 0
 
-last_click_time = 0
-click_count = 0
-CLICK_WINDOW = 250
-
 msg_queue = [] 
 
+# Joystick Configuration
+JOY_CENTER = (WIDTH - 120, HEIGHT - 120)
+JOY_RADIUS = 70
+
 def on_message(event):
-    # Force the JavaScript payload into a native Python string immediately
     msg_queue.append(str(event.data))
 
 async def send(data):
-    global client
-    # 1. Safely check the JavaScript proxy
+    global client, app_state
     if client is not None:
         try:
             msg = json.dumps(data)
             if sys.platform == "emscripten":
-                # 2. Use the injected pure JS helper to cross the language barrier
                 window.send_ws(str(msg))
             else:
                 await client.send(msg)
-        except Exception as e:
-            print(f"Send error: {e}")
+        except Exception:
+            # Silently return to menu if the server closes the connection
+            client = None
+            app_state = "MENU"
             
 async def connect_to_server():
     global client, my_id, app_state
@@ -61,13 +60,10 @@ async def connect_to_server():
     try:
         if sys.platform == "emscripten":
             client = window.eval(f"new WebSocket('{url}')")
-            
-            # 1. Store the socket globally so JS doesn't delete it
             window.ws_client = client
             window.ws_on_message = on_message
             client.onmessage = window.ws_on_message
             
-            # 2. Inject a pure JavaScript function to handle sending safely
             window.eval("""
             window.send_ws = function(msg) {
                 if (window.ws_client && window.ws_client.readyState === 1) {
@@ -123,7 +119,6 @@ async def receive_data():
         while app_state in ["GAME", "WINNER"]:
             while len(msg_queue) > 0:
                 try:
-                    # Process packets safely so one error doesn't kill the background loop
                     process_payload(msg_queue.pop(0))
                 except Exception as e:
                     print(f"Queue error: {e}")
@@ -162,7 +157,7 @@ def draw_winner():
     screen.blit(w_text, (WIDTH // 2 - w_text.get_width() // 2, HEIGHT // 2 - 40))
     screen.blit(sub_text, (WIDTH // 2 - sub_text.get_width() // 2, HEIGHT // 2 + 20))
 
-def draw_game():
+def draw_game(joystick_active, mx, my, can_shoot):
     screen.fill(BG_COLOR)
     if not gamestate:
         text = font.render("Connecting to lobby...", True, BLACK)
@@ -175,7 +170,6 @@ def draw_game():
     is_spectating = False
     spectated_name = ""
     
-    # 1. Determine who the camera is following
     if me and me['alive']:
         target_x = me['x']
         target_y = me['y']
@@ -190,20 +184,17 @@ def draw_game():
             is_spectating = True
             spectated_name = top_player.get('name', 'Unknown')
 
-    # 2. Calculate dynamic zoom factor (starts zooming out when size > 80)
     ZOOM_THRESHOLD = 80
     zoom = 1.0
     if target_size > ZOOM_THRESHOLD:
         zoom = ZOOM_THRESHOLD / target_size
 
-    # Helper function to convert map coordinates to scaled screen coordinates
     def to_screen(world_x, world_y):
         return (
             int((world_x - target_x) * zoom + WIDTH // 2),
             int((world_y - target_y) * zoom + HEIGHT // 2)
         )
 
-    # 3. Draw game objects using the zoom multiplier
     ring_r = gamestate.get('ring', 2000)
     center_screen = to_screen(0, 0)
     pygame.draw.circle(screen, ORANGE, center_screen, max(1, int(ring_r * zoom)), max(1, int(5 * zoom)))
@@ -226,23 +217,31 @@ def draw_game():
         color = YELLOWISH_WHITE if p['id'] == my_id else (240, 240, 200)
         pygame.draw.circle(screen, color, (sx, sy), scaled_size)
 
-        # Scale the directional pointer triangle
-        angle = p['angle']
-        tip_x = sx + math.cos(angle) * (scaled_size + 25 * zoom)
-        tip_y = sy + math.sin(angle) * (scaled_size + 25 * zoom)
-        base_left_x = sx + math.cos(angle - 0.5) * (scaled_size + 15 * zoom)
-        base_left_y = sy + math.sin(angle - 0.5) * (scaled_size + 15 * zoom)
-        base_right_x = sx + math.cos(angle + 0.5) * (scaled_size + 15 * zoom)
-        base_right_y = sy + math.sin(angle + 0.5) * (scaled_size + 15 * zoom)
-        pygame.draw.polygon(screen, BLACK, [(tip_x, tip_y), (base_left_x, base_left_y), (base_right_x, base_right_y)])
+        if p.get('is_aiming'):
+            aim_angle = p.get('aim_angle', 0)
+            ray_surf = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+            ray_length = 2000
+            
+            end_x = int(sx + math.cos(aim_angle) * ray_length)
+            end_y = int(sy + math.sin(aim_angle) * ray_length)
+            
+            pygame.draw.line(ray_surf, (255, 255, 255, 80), (sx, sy), (end_x, end_y), max(2, int(8 * zoom)))
+            screen.blit(ray_surf, (0, 0))
+        else:
+            angle = p['angle']
+            tip_x = sx + math.cos(angle) * (scaled_size + 25 * zoom)
+            tip_y = sy + math.sin(angle) * (scaled_size + 25 * zoom)
+            base_left_x = sx + math.cos(angle - 0.5) * (scaled_size + 15 * zoom)
+            base_left_y = sy + math.sin(angle - 0.5) * (scaled_size + 15 * zoom)
+            base_right_x = sx + math.cos(angle + 0.5) * (scaled_size + 15 * zoom)
+            base_right_y = sy + math.sin(angle + 0.5) * (scaled_size + 15 * zoom)
+            pygame.draw.polygon(screen, BLACK, [(tip_x, tip_y), (base_left_x, base_left_y), (base_right_x, base_right_y)])
 
-        # Draw names (kept at a constant font size for readability)
         name_text = p.get('name', 'Unknown')
         name_surface = font_small.render(name_text, True, BLACK)
         text_rect = name_surface.get_rect(center=(sx, sy - scaled_size - 15))
         screen.blit(name_surface, text_rect)
 
-    # 4. Draw fixed UI Overlays (Unscaled)
     if is_spectating:
         spec_txt = font_large.render(f"SPECTATING: {spectated_name}", True, RED)
         screen.blit(spec_txt, (WIDTH // 2 - spec_txt.get_width() // 2, HEIGHT - 60))
@@ -271,7 +270,6 @@ def draw_game():
 
     if gamestate.get('started'):
         sorted_players = sorted(gamestate.get('players', []), key=lambda x: x['size'], reverse=True)
-        
         y_offset = 15
         current_rank = 1
         previous_size = None
@@ -299,22 +297,63 @@ def draw_game():
             screen.blit(txt_surface, (15, y_offset))
             y_offset += 22
 
+    # Draw Joystick Overlay Only If Able To Shoot
+    if me and me['alive'] and gamestate.get('started') and can_shoot:
+        KNOB_RADIUS = 25
+        
+        surf_width = (JOY_RADIUS + KNOB_RADIUS) * 2
+        j_surf = pygame.Surface((surf_width, surf_width), pygame.SRCALPHA)
+        surf_center = surf_width // 2
+        
+        pygame.draw.circle(j_surf, (0, 0, 0, 80), (surf_center, surf_center), JOY_RADIUS)
+        
+        if joystick_active:
+            dist = math.hypot(mx - JOY_CENTER[0], my - JOY_CENTER[1])
+            angle = math.atan2(my - JOY_CENTER[1], mx - JOY_CENTER[0])
+            dist = min(dist, JOY_RADIUS)
+            knob_x = surf_center + math.cos(angle) * dist
+            knob_y = surf_center + math.sin(angle) * dist
+        else:
+            knob_x, knob_y = surf_center, surf_center
+            
+        kx, ky = int(knob_x), int(knob_y)
+            
+        pygame.draw.circle(j_surf, (255, 255, 255, 150), (kx, ky), KNOB_RADIUS)
+        
+        pygame.draw.line(j_surf, (0, 0, 0, 150), (kx - 10, ky), (kx + 10, ky), 3)
+        pygame.draw.line(j_surf, (0, 0, 0, 150), (kx, ky - 10), (kx, ky + 10), 3)
+        
+        screen.blit(j_surf, (JOY_CENTER[0] - surf_center, JOY_CENTER[1] - surf_center))
 async def main():
-    global last_click_time, click_count, app_state
+    global app_state
     running = True
     last_angle = 0
     last_moving = False
     
+    # Joystick States
+    joystick_active = False
+    last_aim_angle = 0
+    last_is_aiming = False
+    last_shoot_time = 0
+    
     while running:
         clock.tick(FPS)
         mx, my = pygame.mouse.get_pos()
+        now = pygame.time.get_ticks()
+
+        # Evaluate if the player is allowed to shoot (Size & Cooldown)
+        can_shoot = False
+        me = next((p for p in gamestate.get('players', []) if p['id'] == my_id), None)
+        if me and me['alive'] and gamestate.get('started'):
+            if (me['size'] - (me['size'] / 8)) >= START_SIZE:
+                if (now - last_shoot_time) >= 10000:
+                    can_shoot = True
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
 
             if app_state == "MENU":
-                # Allow Spacebar OR clicking anywhere to start
                 is_click = (event.type == pygame.MOUSEBUTTONDOWN and event.button == 1)
                 is_space = (event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE)
                 
@@ -322,7 +361,6 @@ async def main():
                     app_state = "CONNECTING"
                     asyncio.create_task(connect_to_server())
 
-            
             elif app_state == "GAME":
                 if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
                     asyncio.create_task(send({"command": "ready"}))
@@ -333,39 +371,49 @@ async def main():
                         if btn_ready_rect.collidepoint(event.pos):
                             asyncio.create_task(send({"command": "ready"}))
                             continue 
+                            
+                    if gamestate.get('started') and can_shoot:
+                        if math.hypot(event.pos[0] - JOY_CENTER[0], event.pos[1] - JOY_CENTER[1]) <= JOY_RADIUS:
+                            joystick_active = True
+                
+                if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+                    if joystick_active:
+                        joystick_active = False
+                        aim_angle = math.atan2(my - JOY_CENTER[1], mx - JOY_CENTER[0])
+                        asyncio.create_task(send({"command": "shoot", "angle": aim_angle}))
+                        asyncio.create_task(send({"command": "move", "is_aiming": False, "moving": False}))
+                        last_is_aiming = False
+                        last_shoot_time = now # Set the local cooldown tracker
 
-                    now = pygame.time.get_ticks()
-                    if now - last_click_time < CLICK_WINDOW:
-                        click_count += 1
-                    else:
-                        click_count = 1
-                    last_click_time = now
-
-        # Update rendering block to handle the new state
         if app_state == "MENU":
             draw_menu()
         elif app_state == "CONNECTING":
             draw_connecting()
         elif app_state == "GAME":
-            now = pygame.time.get_ticks()
-            if click_count > 0 and (now - last_click_time >= CLICK_WINDOW):
-                if click_count >= 4:
-                    asyncio.create_task(send({"command": "shoot", "type": 2}))
-                elif click_count >= 2:
-                    asyncio.create_task(send({"command": "shoot", "type": 1}))
-                click_count = 0
-
-            center_x, center_y = WIDTH // 2, HEIGHT // 2
-            angle = math.atan2(my - center_y, mx - center_x)
-            moving = pygame.mouse.get_pressed()[0]
-
+            
             if gamestate.get('started'):
-                if moving != last_moving or abs(angle - last_angle) > 0.05:
-                    asyncio.create_task(send({"command": "move", "angle": angle, "moving": moving}))
-                    last_angle = angle
-                    last_moving = moving
+                if joystick_active and can_shoot:
+                    aim_angle = math.atan2(my - JOY_CENTER[1], mx - JOY_CENTER[0])
+                    # Critical Fix: Only send update if the angle changed significantly to prevent WebSocket flood
+                    if abs(aim_angle - last_aim_angle) > 0.05 or not last_is_aiming:
+                        asyncio.create_task(send({"command": "move", "is_aiming": True, "aim_angle": aim_angle, "moving": False}))
+                        last_aim_angle = aim_angle
+                        last_is_aiming = True
+                else:
+                    if joystick_active: # Cancel if size drops while aiming
+                        joystick_active = False
+                        
+                    center_x, center_y = WIDTH // 2, HEIGHT // 2
+                    angle = math.atan2(my - center_y, mx - center_x)
+                    moving = pygame.mouse.get_pressed()[0]
+                    
+                    if moving != last_moving or abs(angle - last_angle) > 0.05 or last_is_aiming:
+                        asyncio.create_task(send({"command": "move", "angle": angle, "moving": moving, "is_aiming": False}))
+                        last_angle = angle
+                        last_moving = moving
+                        last_is_aiming = False
 
-            draw_game()
+            draw_game(joystick_active, mx, my, can_shoot)
 
         elif app_state == "WINNER":
             draw_winner()
@@ -373,7 +421,6 @@ async def main():
                 app_state = "MENU"
 
         pygame.display.flip()
-        
         await asyncio.sleep(0)
 
     if client:
