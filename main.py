@@ -358,6 +358,7 @@ async def main():
                 is_space = (event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE)
                 
                 if is_click or is_space:
+                    pygame.display.toggle_fullscreen()
                     app_state = "CONNECTING"
                     asyncio.create_task(connect_to_server())
 
