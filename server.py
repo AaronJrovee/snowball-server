@@ -134,9 +134,13 @@ class Room:
 
     def get_safe_spawn(self):
         while True:
-            spawn_limit = int(self.ring_radius * 0.8)
-            rx = random.randint(-spawn_limit, spawn_limit)
-            ry = random.randint(-spawn_limit, spawn_limit)
+            # Generate a random angle and a radius strictly inside 80% of the circle
+            angle = random.uniform(0, math.pi * 2)
+            r = math.sqrt(random.uniform(0, 1)) * (self.ring_radius * 0.8)
+            
+            rx = int(math.cos(angle) * r)
+            ry = int(math.sin(angle) * r)
+            
             safe = True
             for p in self.players.values():
                 if math.hypot(rx - p.x, ry - p.y) < (START_SIZE * 3):
