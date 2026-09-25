@@ -161,6 +161,7 @@ def draw_winner():
     screen.blit(sub_text, (WIDTH // 2 - sub_text.get_width() // 2, HEIGHT // 2 + 20))
 
 def draw_game(joystick_active, mx, my, can_shoot, space_held):
+    global camera_x, camera_y  # Add this line right here!
     screen.fill(BG_COLOR)
     if not gamestate:
         text = font.render("Connecting to lobby...", True, BLACK)
