@@ -44,13 +44,11 @@ class Player:
         if not self.alive:
             return
 
-        # Apply Knockback Physics First
         self.x += self.kb_dx
         self.y += self.kb_dy
         self.kb_dx *= 0.85 
         self.kb_dy *= 0.85
 
-        # Dynamic Speed Scaling
         speed_modifier = max(0.2, START_SIZE / max(START_SIZE, self.size))
         active_vel = self.vel * speed_modifier
 
@@ -222,27 +220,6 @@ class Room:
                             elif closest_p.size >= p.size * 1.25:
                                 target_angle = math.atan2(p.y - closest_p.y, p.x - closest_p.x)
                                 action_taken = True
-                                
-                            # BOT SHOOTING AI: Stun & Capture or Stun & Flee
-                            current_time = time.time()
-                            if current_time - p.last_shoot_time >= 10:
-                                cost = p.size / 8
-                                if p.size - cost >= START_SIZE:
-                                    # If actively chasing or fleeing AND within a 400-pixel threat radius
-                                    if action_taken and min_p_dist < 400:
-                                        p.last_shoot_time = current_time 
-                                        p.size -= cost
-                                        proj_size = (p.size + cost) / 4 
-                                        
-                                        # Aim perfectly at the target
-                                        shoot_angle = math.atan2(closest_p.y - p.y, closest_p.x - p.x)
-                                        
-                                        spawn_dist = (p.size + proj_size) + 5
-                                        px = p.x + math.cos(shoot_angle) * spawn_dist
-                                        py = p.y + math.sin(shoot_angle) * spawn_dist
-                                        
-                                        proj = Projectile(p.id, px, py, shoot_angle, proj_size)
-                                        self.projectiles.append(proj)
 
                         if not action_taken and self.particles:
                             closest_part = None
