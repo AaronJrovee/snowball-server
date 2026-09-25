@@ -35,6 +35,9 @@ msg_queue = []
 JOY_CENTER = (WIDTH - 120, HEIGHT - 120)
 JOY_RADIUS = 70
 
+# OPTIMIZATION: Pre-allocate the transparent surface once to prevent severe memory allocation lag
+shared_ray_surf = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+
 def on_message(event):
     msg_queue.append(str(event.data))
 
@@ -218,14 +221,15 @@ def draw_game(joystick_active, mx, my, can_shoot, space_held):
 
         if p.get('is_aiming'):
             aim_angle = p.get('aim_angle', 0)
-            ray_surf = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
             ray_length = 2000
             
             end_x = int(sx + math.cos(aim_angle) * ray_length)
             end_y = int(sy + math.sin(aim_angle) * ray_length)
             
-            pygame.draw.line(ray_surf, (255, 255, 255, 80), (sx, sy), (end_x, end_y), max(2, int(8 * zoom)))
-            screen.blit(ray_surf, (0, 0))
+            # Flush the shared surface and draw the new line
+            shared_ray_surf.fill((0, 0, 0, 0))
+            pygame.draw.line(shared_ray_surf, (255, 255, 255, 80), (sx, sy), (end_x, end_y), max(2, int(8 * zoom)))
+            screen.blit(shared_ray_surf, (0, 0))
         else:
             angle = p['angle']
             tip_x = sx + math.cos(angle) * (scaled_size + 25 * zoom)
