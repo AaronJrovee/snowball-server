@@ -348,7 +348,7 @@ class Room:
                 "lobby_time": remaining_time
             }
             await self.broadcast(state)
-            await asyncio.sleep(1 / 30)
+            await asyncio.sleep(1 / 20)
 
 rooms = {}
 _room_counter = 1

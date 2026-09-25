@@ -26,6 +26,7 @@ app_state = "MENU"
 client = None
 my_id = None
 gamestate = {}
+camera_x, camera_y = 0, 0  # Add this to track the smooth camera
 winner_announcement = ""
 winner_display_start = 0
 
@@ -173,8 +174,10 @@ def draw_game(joystick_active, mx, my, can_shoot, space_held):
     spectated_name = ""
     
     if me and me['alive']:
-        target_x = me['x']
-        target_y = me['y']
+        camera_x += (me['x'] - camera_x) * 0.1
+        camera_y += (me['y'] - camera_y) * 0.1
+        target_x = camera_x
+        target_y = camera_y
         target_size = me['size']
     elif gamestate.get('started'):
         alive_players = [p for p in gamestate.get('players', []) if p['alive']]
