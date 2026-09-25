@@ -48,7 +48,6 @@ async def send(data):
             else:
                 await client.send(msg)
         except Exception:
-            # Silently return to menu if the server closes the connection
             client = None
             app_state = "MENU"
             
@@ -157,7 +156,7 @@ def draw_winner():
     screen.blit(w_text, (WIDTH // 2 - w_text.get_width() // 2, HEIGHT // 2 - 40))
     screen.blit(sub_text, (WIDTH // 2 - sub_text.get_width() // 2, HEIGHT // 2 + 20))
 
-def draw_game(joystick_active, mx, my, can_shoot):
+def draw_game(joystick_active, mx, my, can_shoot, space_held):
     screen.fill(BG_COLOR)
     if not gamestate:
         text = font.render("Connecting to lobby...", True, BLACK)
@@ -297,8 +296,8 @@ def draw_game(joystick_active, mx, my, can_shoot):
             screen.blit(txt_surface, (15, y_offset))
             y_offset += 22
 
-    # Draw Joystick Overlay Only If Able To Shoot
-    if me and me['alive'] and gamestate.get('started') and can_shoot:
+    # Draw Joystick Overlay Only If Able To Shoot AND Space is not held
+    if me and me['alive'] and gamestate.get('started') and can_shoot and not space_held:
         KNOB_RADIUS = 25
         
         surf_width = (JOY_RADIUS + KNOB_RADIUS) * 2
@@ -324,14 +323,16 @@ def draw_game(joystick_active, mx, my, can_shoot):
         pygame.draw.line(j_surf, (0, 0, 0, 150), (kx, ky - 10), (kx, ky + 10), 3)
         
         screen.blit(j_surf, (JOY_CENTER[0] - surf_center, JOY_CENTER[1] - surf_center))
+
 async def main():
     global app_state
     running = True
     last_angle = 0
     last_moving = False
     
-    # Joystick States
+    # Joystick & Aiming States
     joystick_active = False
+    space_aim_active = False  
     last_aim_angle = 0
     last_is_aiming = False
     last_shoot_time = 0
@@ -340,6 +341,10 @@ async def main():
         clock.tick(FPS)
         mx, my = pygame.mouse.get_pos()
         now = pygame.time.get_ticks()
+        
+        # Track if the spacebar is actively held down this frame
+        keys = pygame.key.get_pressed()
+        space_held = keys[pygame.K_SPACE]
 
         # Evaluate if the player is allowed to shoot (Size & Cooldown)
         can_shoot = False
@@ -358,13 +363,26 @@ async def main():
                 is_space = (event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE)
                 
                 if is_click or is_space:
-                    pygame.display.toggle_fullscreen()
                     app_state = "CONNECTING"
                     asyncio.create_task(connect_to_server())
 
             elif app_state == "GAME":
                 if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
-                    asyncio.create_task(send({"command": "ready"}))
+                    if not gamestate.get('started'):
+                        asyncio.create_task(send({"command": "ready"}))
+                    # If they press space while ALREADY holding the mouse down
+                    elif can_shoot and pygame.mouse.get_pressed()[0]:
+                        space_aim_active = True
+
+                # Fire the snowball if they release the spacebar while aiming
+                if event.type == pygame.KEYUP and event.key == pygame.K_SPACE:
+                    if space_aim_active:
+                        space_aim_active = False
+                        aim_angle = math.atan2(my - HEIGHT // 2, mx - WIDTH // 2)
+                        asyncio.create_task(send({"command": "shoot", "angle": aim_angle}))
+                        asyncio.create_task(send({"command": "move", "is_aiming": False, "moving": False}))
+                        last_is_aiming = False
+                        last_shoot_time = now
 
                 if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                     if not gamestate.get('started'):
@@ -374,17 +392,27 @@ async def main():
                             continue 
                             
                     if gamestate.get('started') and can_shoot:
-                        if math.hypot(event.pos[0] - JOY_CENTER[0], event.pos[1] - JOY_CENTER[1]) <= JOY_RADIUS:
+                        # If they click while ALREADY holding the spacebar down
+                        if space_held:
+                            space_aim_active = True
+                        elif math.hypot(event.pos[0] - JOY_CENTER[0], event.pos[1] - JOY_CENTER[1]) <= JOY_RADIUS:
                             joystick_active = True
                 
+                # Fire the snowball if they release the mouse while aiming
                 if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
-                    if joystick_active:
+                    if joystick_active or space_aim_active:
+                        if joystick_active:
+                            aim_angle = math.atan2(my - JOY_CENTER[1], mx - JOY_CENTER[0])
+                        else:
+                            # Calculate aim angle based on screen center (mouse position relative to player)
+                            aim_angle = math.atan2(my - HEIGHT // 2, mx - WIDTH // 2)
+                            
                         joystick_active = False
-                        aim_angle = math.atan2(my - JOY_CENTER[1], mx - JOY_CENTER[0])
+                        space_aim_active = False
                         asyncio.create_task(send({"command": "shoot", "angle": aim_angle}))
                         asyncio.create_task(send({"command": "move", "is_aiming": False, "moving": False}))
                         last_is_aiming = False
-                        last_shoot_time = now # Set the local cooldown tracker
+                        last_shoot_time = now 
 
         if app_state == "MENU":
             draw_menu()
@@ -393,16 +421,21 @@ async def main():
         elif app_state == "GAME":
             
             if gamestate.get('started'):
-                if joystick_active and can_shoot:
-                    aim_angle = math.atan2(my - JOY_CENTER[1], mx - JOY_CENTER[0])
-                    # Critical Fix: Only send update if the angle changed significantly to prevent WebSocket flood
+                # Handle continuous aim tracking for both control schemes
+                if (joystick_active or space_aim_active) and can_shoot:
+                    if joystick_active:
+                        aim_angle = math.atan2(my - JOY_CENTER[1], mx - JOY_CENTER[0])
+                    else:
+                        aim_angle = math.atan2(my - HEIGHT // 2, mx - WIDTH // 2)
+                        
                     if abs(aim_angle - last_aim_angle) > 0.05 or not last_is_aiming:
                         asyncio.create_task(send({"command": "move", "is_aiming": True, "aim_angle": aim_angle, "moving": False}))
                         last_aim_angle = aim_angle
                         last_is_aiming = True
                 else:
-                    if joystick_active: # Cancel if size drops while aiming
+                    if joystick_active or space_aim_active: 
                         joystick_active = False
+                        space_aim_active = False
                         
                     center_x, center_y = WIDTH // 2, HEIGHT // 2
                     angle = math.atan2(my - center_y, mx - center_x)
@@ -414,12 +447,8 @@ async def main():
                         last_moving = moving
                         last_is_aiming = False
 
-            draw_game(joystick_active, mx, my, can_shoot)
-
-        elif app_state == "WINNER":
-            draw_winner()
-            if pygame.time.get_ticks() - winner_display_start > 4000:
-                app_state = "MENU"
+            # Pass the space_held boolean to the draw function
+            draw_game(joystick_active, mx, my, can_shoot, space_held)
 
         pygame.display.flip()
         await asyncio.sleep(0)

@@ -50,7 +50,7 @@ class Player:
         self.kb_dx *= 0.85 
         self.kb_dy *= 0.85
 
-        # FEATURE 2: Dynamic Speed Scaling
+        # Dynamic Speed Scaling
         speed_modifier = max(0.2, START_SIZE / max(START_SIZE, self.size))
         active_vel = self.vel * speed_modifier
 
@@ -67,8 +67,6 @@ class Player:
                 dy = math.sin(self.angle) * active_vel
                 self.x += dx
                 self.y += dy
-
-        # FEATURE 5: Free-roaming movement (Removed the previous map boundary clamp)
 
     def to_dict(self):
         return {
@@ -114,7 +112,6 @@ class Room:
         self.projectiles = []
         self.ring_radius = MAP_SIZE * 1.5
         
-        # FEATURE 4: Spawn initial particles strictly inside the ring using polar coordinates
         self.particles = []
         for _ in range(MAX_PARTICLES):
             angle = random.uniform(0, math.pi * 2)
@@ -139,7 +136,6 @@ class Room:
 
     def get_safe_spawn(self):
         while True:
-            # Force spawns to be inside the safe ring
             spawn_limit = int(self.ring_radius * 0.8)
             rx = random.randint(-spawn_limit, spawn_limit)
             ry = random.randint(-spawn_limit, spawn_limit)
@@ -151,7 +147,6 @@ class Room:
             if safe:
                 return rx, ry
 
-    # FEATURE 3: Helper function to spawn collectible particle bursts instead of instant growth
     def spawn_burst(self, x, y, total_value, radius):
         num_particles = max(1, int(total_value / 5))
         for _ in range(num_particles):
@@ -228,6 +223,27 @@ class Room:
                                 target_angle = math.atan2(p.y - closest_p.y, p.x - closest_p.x)
                                 action_taken = True
                                 
+                            # BOT SHOOTING AI: Stun & Capture or Stun & Flee
+                            current_time = time.time()
+                            if current_time - p.last_shoot_time >= 10:
+                                cost = p.size / 8
+                                if p.size - cost >= START_SIZE:
+                                    # If actively chasing or fleeing AND within a 400-pixel threat radius
+                                    if action_taken and min_p_dist < 400:
+                                        p.last_shoot_time = current_time 
+                                        p.size -= cost
+                                        proj_size = (p.size + cost) / 4 
+                                        
+                                        # Aim perfectly at the target
+                                        shoot_angle = math.atan2(closest_p.y - p.y, closest_p.x - p.x)
+                                        
+                                        spawn_dist = (p.size + proj_size) + 5
+                                        px = p.x + math.cos(shoot_angle) * spawn_dist
+                                        py = p.y + math.sin(shoot_angle) * spawn_dist
+                                        
+                                        proj = Projectile(p.id, px, py, shoot_angle, proj_size)
+                                        self.projectiles.append(proj)
+
                         if not action_taken and self.particles:
                             closest_part = None
                             min_part_dist = float('inf')
@@ -263,7 +279,6 @@ class Room:
                         self.projectiles.remove(proj)
                         self.spawn_burst(proj.x, proj.y, proj.size, proj.size / 2)
 
-                # FEATURE 3: Projectile vs Projectile collisions
                 for i, p1 in enumerate(self.projectiles):
                     if p1.life <= 0: continue
                     for p2 in self.projectiles[i+1:]:
@@ -287,7 +302,6 @@ class Room:
                     if not p.alive:
                         continue
 
-                    # The ring melting logic remains unchanged
                     if math.sqrt(p.x**2 + p.y**2) > self.ring_radius:
                         p.size -= 0.5
                         if p.size <= 5:
@@ -298,7 +312,6 @@ class Room:
                             p.size += part.size * 0.1
                             self.particles.remove(part)
 
-                    # Projectile vs Player Collisions
                     for proj in self.projectiles[:]:
                         if proj.owner_id != pid and proj.life > 0:
                             if math.hypot(p.x - proj.x, p.y - proj.y) < p.size + proj.size:
@@ -307,29 +320,24 @@ class Room:
                                     p.alive = False
                                     self.spawn_burst(p.x, p.y, p.size, p.size)
                                 else:
-                                    # FEATURE 1: Scale stun and knockback inversely by opponent size
                                     size_ratio = max(0.1, proj.size / p.size)
                                     p.stun_timer = int(proj.size * STUN_MULTIPLIER * size_ratio)
                                     p.kb_dx = math.cos(proj.angle) * (proj.size * 1.5 * size_ratio)
                                     p.kb_dy = math.sin(proj.angle) * (proj.size * 1.5 * size_ratio)
 
-                    # Player Consumptions
                     for other_id, other_p in self.players.items():
                         if pid != other_id and other_p.alive:
                             if math.hypot(p.x - other_p.x, p.y - other_p.y) < p.size:
                                 if p.size >= other_p.size * 1.25:
                                     other_p.alive = False
-                                    # FEATURE 3: Generate collectible particles instead of instant growth
                                     self.spawn_burst(other_p.x, other_p.y, other_p.size * 0.5, other_p.size)
 
-                # FEATURE 4: Snow Particle Culling and Respawning
                 for part in self.particles[:]:
                     if math.hypot(part.x, part.y) > self.ring_radius:
                         self.particles.remove(part)
 
                 while len(self.particles) < MAX_PARTICLES:
                     angle = random.uniform(0, math.pi * 2)
-                    # Use sqrt for an even distribution inside the circular ring
                     r = math.sqrt(random.uniform(0, 1)) * max(1, self.ring_radius)
                     self.particles.append(Particle(r * math.cos(angle), r * math.sin(angle), 5))
 
