@@ -35,13 +35,8 @@ msg_queue = []
 JOY_CENTER = (WIDTH - 120, HEIGHT - 120)
 JOY_RADIUS = 70
 
-# OPTIMIZATION: Pre-allocate all transparent surfaces globally to prevent WASM memory crashes
+# OPTIMIZATION: Pre-allocate the transparent surface once to prevent severe memory allocation lag
 shared_ray_surf = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
-lobby_overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
-lobby_overlay.fill((0, 0, 0, 150))
-joystick_surf = pygame.Surface(((JOY_RADIUS + 25) * 2, (JOY_RADIUS + 25) * 2), pygame.SRCALPHA)
-lb_bg_surf = pygame.Surface((400, 40), pygame.SRCALPHA)
-lb_bg_surf.fill((255, 255, 255, 180))
 
 def on_message(event):
     msg_queue.append(str(event.data))
@@ -166,7 +161,6 @@ def draw_winner():
 
 def draw_game(joystick_active, mx, my, can_shoot, space_held):
     screen.fill(BG_COLOR)
-    
     if not gamestate:
         text = font.render("Connecting to lobby...", True, BLACK)
         screen.blit(text, (WIDTH // 2 - text.get_width() // 2, HEIGHT // 2))
@@ -228,9 +222,11 @@ def draw_game(joystick_active, mx, my, can_shoot, space_held):
         if p.get('is_aiming'):
             aim_angle = p.get('aim_angle', 0)
             ray_length = 2000
+            
             end_x = int(sx + math.cos(aim_angle) * ray_length)
             end_y = int(sy + math.sin(aim_angle) * ray_length)
             
+            # Flush the shared surface and draw the new line
             shared_ray_surf.fill((0, 0, 0, 0))
             pygame.draw.line(shared_ray_surf, (255, 255, 255, 80), (sx, sy), (end_x, end_y), max(2, int(8 * zoom)))
             screen.blit(shared_ray_surf, (0, 0))
@@ -254,8 +250,9 @@ def draw_game(joystick_active, mx, my, can_shoot, space_held):
         screen.blit(spec_txt, (WIDTH // 2 - spec_txt.get_width() // 2, HEIGHT - 60))
 
     if not gamestate.get('started'):
-        # Utilize the pre-allocated surface instead of creating one every frame
-        screen.blit(lobby_overlay, (0, 0))
+        s = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+        s.fill((0, 0, 0, 150))
+        screen.blit(s, (0, 0))
 
         lobby_time = gamestate.get('lobby_time', 60)
         timer_text = font_large.render(f"Starts in: {lobby_time}s", True, WHITE)
@@ -296,19 +293,22 @@ def draw_game(joystick_active, mx, my, can_shoot, space_held):
             txt_surface = font_small.render(entry_text, True, text_color)
             
             bg_rect = pygame.Rect(10, y_offset - 2, txt_surface.get_width() + 10, txt_surface.get_height() + 4)
-            # Use pre-allocated slice to prevent memory crash
-            screen.blit(lb_bg_surf, (bg_rect.x, bg_rect.y), pygame.Rect(0, 0, bg_rect.width, bg_rect.height))
+            s = pygame.Surface((bg_rect.width, bg_rect.height), pygame.SRCALPHA)
+            s.fill((255, 255, 255, 180))
+            screen.blit(s, (bg_rect.x, bg_rect.y))
+            
             screen.blit(txt_surface, (15, y_offset))
             y_offset += 22
 
+    # Draw Joystick Overlay Only If Able To Shoot AND Space is not held
     if me and me['alive'] and gamestate.get('started') and can_shoot and not space_held:
         KNOB_RADIUS = 25
+        
         surf_width = (JOY_RADIUS + KNOB_RADIUS) * 2
+        j_surf = pygame.Surface((surf_width, surf_width), pygame.SRCALPHA)
         surf_center = surf_width // 2
         
-        # Flush the pre-allocated joystick surface
-        joystick_surf.fill((0, 0, 0, 0))
-        pygame.draw.circle(joystick_surf, (0, 0, 0, 80), (surf_center, surf_center), JOY_RADIUS)
+        pygame.draw.circle(j_surf, (0, 0, 0, 80), (surf_center, surf_center), JOY_RADIUS)
         
         if joystick_active:
             dist = math.hypot(mx - JOY_CENTER[0], my - JOY_CENTER[1])
@@ -320,11 +320,13 @@ def draw_game(joystick_active, mx, my, can_shoot, space_held):
             knob_x, knob_y = surf_center, surf_center
             
         kx, ky = int(knob_x), int(knob_y)
-        pygame.draw.circle(joystick_surf, (255, 255, 255, 150), (kx, ky), KNOB_RADIUS)
-        pygame.draw.line(joystick_surf, (0, 0, 0, 150), (kx - 10, ky), (kx + 10, ky), 3)
-        pygame.draw.line(joystick_surf, (0, 0, 0, 150), (kx, ky - 10), (kx, ky + 10), 3)
+            
+        pygame.draw.circle(j_surf, (255, 255, 255, 150), (kx, ky), KNOB_RADIUS)
         
-        screen.blit(joystick_surf, (JOY_CENTER[0] - surf_center, JOY_CENTER[1] - surf_center))
+        pygame.draw.line(j_surf, (0, 0, 0, 150), (kx - 10, ky), (kx + 10, ky), 3)
+        pygame.draw.line(j_surf, (0, 0, 0, 150), (kx, ky - 10), (kx, ky + 10), 3)
+        
+        screen.blit(j_surf, (JOY_CENTER[0] - surf_center, JOY_CENTER[1] - surf_center))
 
 async def main():
     global app_state
@@ -332,6 +334,7 @@ async def main():
     last_angle = 0
     last_moving = False
     
+    # Joystick & Aiming States
     joystick_active = False
     space_aim_active = False  
     last_aim_angle = 0
@@ -343,9 +346,11 @@ async def main():
         mx, my = pygame.mouse.get_pos()
         now = pygame.time.get_ticks()
         
+        # Track if the spacebar is actively held down this frame
         keys = pygame.key.get_pressed()
         space_held = keys[pygame.K_SPACE]
 
+        # Evaluate if the player is allowed to shoot (Size & Cooldown)
         can_shoot = False
         me = next((p for p in gamestate.get('players', []) if p['id'] == my_id), None)
         if me and me['alive'] and gamestate.get('started'):
@@ -369,9 +374,11 @@ async def main():
                 if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
                     if not gamestate.get('started'):
                         asyncio.create_task(send({"command": "ready"}))
+                    # If they press space while ALREADY holding the mouse down
                     elif can_shoot and pygame.mouse.get_pressed()[0]:
                         space_aim_active = True
 
+                # Fire the snowball if they release the spacebar while aiming
                 if event.type == pygame.KEYUP and event.key == pygame.K_SPACE:
                     if space_aim_active:
                         space_aim_active = False
@@ -389,16 +396,19 @@ async def main():
                             continue 
                             
                     if gamestate.get('started') and can_shoot:
+                        # If they click while ALREADY holding the spacebar down
                         if space_held:
                             space_aim_active = True
                         elif math.hypot(event.pos[0] - JOY_CENTER[0], event.pos[1] - JOY_CENTER[1]) <= JOY_RADIUS:
                             joystick_active = True
                 
+                # Fire the snowball if they release the mouse while aiming
                 if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
                     if joystick_active or space_aim_active:
                         if joystick_active:
                             aim_angle = math.atan2(my - JOY_CENTER[1], mx - JOY_CENTER[0])
                         else:
+                            # Calculate aim angle based on screen center (mouse position relative to player)
                             aim_angle = math.atan2(my - HEIGHT // 2, mx - WIDTH // 2)
                             
                         joystick_active = False
@@ -415,6 +425,7 @@ async def main():
         elif app_state == "GAME":
             
             if gamestate.get('started'):
+                # Handle continuous aim tracking for both control schemes
                 if (joystick_active or space_aim_active) and can_shoot:
                     if joystick_active:
                         aim_angle = math.atan2(my - JOY_CENTER[1], mx - JOY_CENTER[0])
@@ -440,6 +451,7 @@ async def main():
                         last_moving = moving
                         last_is_aiming = False
 
+            # Pass the space_held boolean to the draw function
             draw_game(joystick_active, mx, my, can_shoot, space_held)
 
         pygame.display.flip()
