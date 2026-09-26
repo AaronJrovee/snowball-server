@@ -234,8 +234,8 @@ class OfflineEngine:
                         else:
                             ratio = max(0.1, proj[2] / p["size"])
                             p["stun_timer"] = int(proj[2] * STUN_MULTIPLIER * ratio)
-                            p["kb_dx"] = math.cos(proj[3]) * (proj[2] * 2.5 * ratio)
-                            p["kb_dy"] = math.sin(proj[3]) * (proj[2] * 2.5 * ratio)
+                            p["kb_dx"] = math.cos(proj[3]) * (proj[2] * 3 * ratio)
+                            p["kb_dy"] = math.sin(proj[3]) * (proj[2] * 3 * ratio)
 
             for other_p in self.players:
                 if p["id"] != other_p["id"] and other_p["alive"]:
@@ -420,9 +420,14 @@ def draw_connecting():
     screen.blit(sub, (WIDTH // 2 - sub.get_width() // 2, HEIGHT // 2 + 30))
 
 def draw_winner():
-    screen.fill(BG_COLOR)
-    w_text = font_large.render(winner_announcement, True, BLACK)
-    sub_text = font.render("Returning to menu shortly...", True, (80, 80, 80))
+    # Create a translucent dark overlay
+    overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+    overlay.fill((0, 0, 0, 150))
+    screen.blit(overlay, (0, 0))
+    
+    # Draw white text over the dark overlay
+    w_text = font_large.render(winner_announcement, True, WHITE)
+    sub_text = font.render("Returning to menu shortly...", True, (200, 200, 200))
     screen.blit(w_text, (WIDTH // 2 - w_text.get_width() // 2, HEIGHT // 2 - 40))
     screen.blit(sub_text, (WIDTH // 2 - sub_text.get_width() // 2, HEIGHT // 2 + 20))
 
