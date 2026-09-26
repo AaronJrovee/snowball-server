@@ -25,7 +25,7 @@ font = pygame.font.SysFont("Arial", 20)
 font_small = pygame.font.SysFont("Arial", 16, bold=True)
 
 app_state = "MENU"
-server_status = "OK"  # Tracks if the server is down or capped
+server_status = "OK"  
 client = None
 my_id = None
 gamestate = {}
@@ -42,14 +42,16 @@ shared_ray_surf = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
 offline_engine = None
 
 # ==============================================================================
-# OFFLINE ENGINE (Mini Local Server)
+# OFFLINE ENGINE (1:1 Exact Server Mirror)
 # ==============================================================================
+PREFIXES = ["Cool", "Frozen", "Ice", "Snow", "Brawl", "Rolling", "Winter", "Cold", "Awesome", "Amazing", "Throwing", "Super", "New"]
+SUFFIXES = ["Master", "Expert", "Addict", "Sphere", "Gamer", "Gobbler", "Dude"]
+
 class OfflineEngine:
     def __init__(self):
         self.ring = MAP_SIZE * 1.5
         self.particles = []
-        # Use fewer particles offline to guarantee high FPS
-        for _ in range(500):
+        for _ in range(MAX_PARTICLES):
             a = random.uniform(0, math.pi * 2)
             r = math.sqrt(random.uniform(0, 1)) * self.ring
             self.particles.append([r * math.cos(a), r * math.sin(a), 5])
@@ -57,11 +59,20 @@ class OfflineEngine:
         self.projectiles = []
         self.players = []
         
+        existing_names = set()
+        def get_name(p_id):
+            for _ in range(100):
+                n = f"{random.choice(PREFIXES)}{random.choice(SUFFIXES)}"
+                if n not in existing_names:
+                    existing_names.add(n)
+                    return n
+            return f"Player{p_id}"
+
         # Human Player
         self.players.append({
             "id": 0, "x": 0, "y": 0, "size": START_SIZE, "angle": 0, "alive": True,
-            "name": "You", "is_aiming": False, "aim_angle": 0, "kb_dx": 0, "kb_dy": 0,
-            "last_shoot": 0, "is_moving": False
+            "name": get_name(0), "is_aiming": False, "aim_angle": 0, "kb_dx": 0, "kb_dy": 0,
+            "last_shoot": 0, "is_moving": False, "is_bot": False, "stun_timer": 0
         })
         
         # Bots
@@ -70,9 +81,17 @@ class OfflineEngine:
             r = math.sqrt(random.uniform(0, 1)) * (self.ring * 0.8)
             self.players.append({
                 "id": i, "x": r * math.cos(a), "y": r * math.sin(a), "size": START_SIZE,
-                "angle": 0, "alive": True, "name": f"Bot {i}", "is_aiming": False,
-                "aim_angle": 0, "kb_dx": 0, "kb_dy": 0, "last_shoot": 0, "is_moving": True
+                "angle": 0, "alive": True, "name": get_name(i) + " [BOT]", "is_aiming": False,
+                "aim_angle": 0, "kb_dx": 0, "kb_dy": 0, "last_shoot": 0, "is_moving": True,
+                "is_bot": True, "stun_timer": 0
             })
+
+    def spawn_burst(self, x, y, total_value, radius):
+        num = max(1, int(total_value / 5))
+        for _ in range(num):
+            a = random.uniform(0, math.pi * 2)
+            r = random.uniform(0, radius)
+            self.particles.append([x + math.cos(a) * r, y + math.sin(a) * r, 5])
 
     def update(self, moving, angle, aiming, aim_angle, shoot):
         me = self.players[0]
@@ -95,69 +114,146 @@ class OfflineEngine:
                     psize, aim_angle, 0, 60
                 ])
 
-        self.ring = max(0, self.ring - RING_SHRINK_RATE)
+        # Exact server Bot AI
+        for p in self.players:
+            if p["is_bot"] and p["alive"]:
+                closest_p = None
+                min_p_dist = float('inf')
+                for other_p in self.players:
+                    if other_p["id"] != p["id"] and other_p["alive"]:
+                        dist = math.hypot(p["x"] - other_p["x"], p["y"] - other_p["y"])
+                        if dist < min_p_dist:
+                            min_p_dist = dist
+                            closest_p = other_p
+                
+                action_taken = False
+                target_angle = p["angle"]
+                if closest_p:
+                    if p["size"] >= closest_p["size"] * 1.25:
+                        target_angle = math.atan2(closest_p["y"] - p["y"], closest_p["x"] - p["x"])
+                        action_taken = True
+                    elif closest_p["size"] >= p["size"] * 1.25:
+                        target_angle = math.atan2(p["y"] - closest_p["y"], p["x"] - closest_p["x"])
+                        action_taken = True
 
+                if not action_taken and self.particles:
+                    closest_part = None
+                    min_part_dist = float('inf')
+                    for part in self.particles:
+                        dist = math.hypot(p["x"] - part[0], p["y"] - part[1])
+                        if dist < min_part_dist:
+                            min_part_dist = dist
+                            closest_part = part
+                    if closest_part:
+                        target_angle = math.atan2(closest_part[1] - p["y"], closest_part[0] - p["x"])
+                
+                dist_to_center = math.hypot(p["x"], p["y"])
+                if dist_to_center > self.ring - p["size"] - 30:
+                    target_angle = math.atan2(-p["y"], -p["x"]) 
+
+                if random.random() < 0.05:  
+                    target_angle += random.uniform(-0.5, 0.5)
+
+                diff = (target_angle - p["angle"] + math.pi) % (2 * math.pi) - math.pi
+                p["angle"] += max(-0.08, min(0.08, diff))
+
+        # Position updates
         for p in self.players:
             if not p["alive"]: continue
-
-            # Simple Bot AI
-            if p["id"] != 0:
-                p["angle"] += random.uniform(-0.1, 0.1)
-                p["is_moving"] = True
-                if math.hypot(p["x"], p["y"]) > self.ring - p["size"] - 30:
-                    p["angle"] = math.atan2(-p["y"], -p["x"])
-
-            # Physics
+            
             p["x"] += p["kb_dx"]
             p["y"] += p["kb_dy"]
             p["kb_dx"] *= 0.85
             p["kb_dy"] *= 0.85
 
-            speed = 5 * max(0.2, START_SIZE / max(START_SIZE, p["size"]))
-            if p["is_aiming"]:
-                p["x"] += math.cos(p["aim_angle"] + math.pi) * (speed * 0.5)
-                p["y"] += math.sin(p["aim_angle"] + math.pi) * (speed * 0.5)
-            elif p["is_moving"]:
-                p["x"] += math.cos(p["angle"]) * speed
-                p["y"] += math.sin(p["angle"]) * speed
-                
-            # Ring Death
-            if math.hypot(p["x"], p["y"]) > self.ring:
-                p["size"] -= 0.5
-                if p["size"] <= 5: p["alive"] = False
+            speed_modifier = max(0.2, START_SIZE / max(START_SIZE, p["size"]))
+            active_vel = 5 * speed_modifier
 
-            # Eat Particles
-            for part in self.particles[:]:
-                if math.hypot(p["x"] - part[0], p["y"] - part[1]) < p["size"] + part[2]:
-                    p["size"] += part[2] * 0.1
-                    self.particles.remove(part)
+            if p["stun_timer"] > 0:
+                p["stun_timer"] -= 1
+            else:
+                if p["is_aiming"]:
+                    p["x"] += math.cos(p["aim_angle"] + math.pi) * (active_vel * 0.5)
+                    p["y"] += math.sin(p["aim_angle"] + math.pi) * (active_vel * 0.5)
+                elif p["is_moving"]:
+                    p["x"] += math.cos(p["angle"]) * active_vel
+                    p["y"] += math.sin(p["angle"]) * active_vel
 
-        # Projectile Logic
+        self.ring = max(0, self.ring - RING_SHRINK_RATE)
+
+        # Projectile updates
         for proj in self.projectiles[:]:
             proj[0] += math.cos(proj[3]) * 10
             proj[1] += math.sin(proj[3]) * 10
             proj[5] -= 1
             if proj[5] <= 0:
                 self.projectiles.remove(proj)
+                self.spawn_burst(proj[0], proj[1], proj[2], proj[2] / 2)
                 continue
-            
-            for p in self.players:
-                if p["alive"] and p["id"] != proj[4]:
+
+        # Projectile-Projectile Collisions
+        for i, p1 in enumerate(self.projectiles):
+            if p1[5] <= 0: continue
+            for p2 in self.projectiles[i+1:]:
+                if p2[5] <= 0: continue
+                if math.hypot(p1[0] - p2[0], p1[1] - p2[1]) < p1[2] + p2[2]:
+                    if p1[2] >= p2[2] * 1.25:
+                        p1[2] -= p2[2] * 0.25
+                        p2[5] = 0
+                        self.spawn_burst(p2[0], p2[1], p2[2], p2[2])
+                    elif p2[2] >= p1[2] * 1.25:
+                        p2[2] -= p1[2] * 0.25
+                        p1[5] = 0
+                        self.spawn_burst(p1[0], p1[1], p1[2], p1[2])
+                    else:
+                        p1[5] = 0
+                        p2[5] = 0
+                        self.spawn_burst(p1[0], p1[1], p1[2], p1[2])
+                        self.spawn_burst(p2[0], p2[1], p2[2], p2[2])
+
+        # Player Collisions (Eating, Projectiles, Ring, Particles)
+        for p in self.players:
+            if not p["alive"]: continue
+
+            if math.hypot(p["x"], p["y"]) > self.ring:
+                p["size"] -= 0.5
+                if p["size"] <= 5: p["alive"] = False
+
+            for part in self.particles[:]:
+                if math.hypot(p["x"] - part[0], p["y"] - part[1]) < p["size"] + part[2]:
+                    p["size"] += part[2] * 0.1
+                    self.particles.remove(part)
+
+            for proj in self.projectiles[:]:
+                if proj[4] != p["id"] and proj[5] > 0:
                     if math.hypot(p["x"] - proj[0], p["y"] - proj[1]) < p["size"] + proj[2]:
-                        if proj in self.projectiles: self.projectiles.remove(proj)
+                        proj[5] = 0
                         if proj[2] > p["size"]:
                             p["alive"] = False
+                            self.spawn_burst(p["x"], p["y"], p["size"], p["size"])
                         else:
                             ratio = max(0.1, proj[2] / p["size"])
+                            p["stun_timer"] = int(proj[2] * STUN_MULTIPLIER * ratio)
                             p["kb_dx"] = math.cos(proj[3]) * (proj[2] * 1.5 * ratio)
                             p["kb_dy"] = math.sin(proj[3]) * (proj[2] * 1.5 * ratio)
 
-        while len(self.particles) < 500:
+            for other_p in self.players:
+                if p["id"] != other_p["id"] and other_p["alive"]:
+                    if math.hypot(p["x"] - other_p["x"], p["y"] - other_p["y"]) < p["size"]:
+                        if p["size"] >= other_p["size"] * 1.25:
+                            other_p["alive"] = False
+                            self.spawn_burst(other_p["x"], other_p["y"], other_p["size"] * 0.5, other_p["size"])
+
+        # Particle ring-cull & respawn
+        for part in self.particles[:]:
+            if math.hypot(part[0], part[1]) > self.ring:
+                self.particles.remove(part)
+
+        while len(self.particles) < MAX_PARTICLES:
             a = random.uniform(0, math.pi * 2)
             r = math.sqrt(random.uniform(0, 1)) * max(1, self.ring)
             self.particles.append([r * math.cos(a), r * math.sin(a), 5])
 
-        # Return standardized gamestate dict
         return {
             "players": self.players,
             "projectiles": [[int(pr[0]), int(pr[1]), int(pr[2])] for pr in self.projectiles],
@@ -297,14 +393,15 @@ def draw_menu():
     offline_btn = None
 
     if server_status == "OK":
-        play_btn = pygame.Rect(WIDTH // 2 - 100, HEIGHT // 2, 200, 60)
+        # Widened to 280 to prevent PLAY ONLINE text overflow
+        play_btn = pygame.Rect(WIDTH // 2 - 140, HEIGHT // 2, 280, 60)
         pygame.draw.rect(screen, (50, 150, 255), play_btn, border_radius=10)
         p_text = font_large.render("PLAY ONLINE", True, WHITE)
         screen.blit(p_text, (play_btn.centerx - p_text.get_width() // 2, play_btn.centery - p_text.get_height() // 2))
         
-        offline_btn = pygame.Rect(WIDTH // 2 - 100, HEIGHT // 2 + 80, 200, 60)
+        offline_btn = pygame.Rect(WIDTH // 2 - 140, HEIGHT // 2 + 80, 280, 60)
     else:
-        offline_btn = pygame.Rect(WIDTH // 2 - 100, HEIGHT // 2, 200, 60)
+        offline_btn = pygame.Rect(WIDTH // 2 - 140, HEIGHT // 2, 280, 60)
         msg = "Server Unreachable" if server_status == "UNREACHABLE" else "Monthly Bandwidth Capped"
         err_text = font_small.render(msg, True, RED)
         screen.blit(err_text, (WIDTH // 2 - err_text.get_width() // 2, HEIGHT // 2 - 35))
@@ -514,7 +611,6 @@ async def main():
         me = next((p for p in gamestate.get('players', []) if p['id'] == my_id), None)
         if me and me['alive'] and gamestate.get('started'):
             if (me['size'] - (me['size'] / 8)) >= START_SIZE:
-                # Online mode checks cooldown internally, Offline engine uses last_shoot timestamp
                 can_shoot = True
 
         for event in pygame.event.get():
@@ -632,7 +728,6 @@ async def main():
                 gamestate = offline_engine.update(moving, angle, is_aiming_now, aim_angle, pending_shoot_command)
                 pending_shoot_command = False
                 
-                # Check for offline win condition
                 alive_players = [p for p in gamestate['players'] if p['alive']]
                 if len(alive_players) <= 1:
                     winner_name = alive_players[0]['name'] if alive_players else "Nobody"
