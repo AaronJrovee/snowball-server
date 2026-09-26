@@ -692,6 +692,7 @@ async def main():
             draw_connecting()
             
         elif app_state == "WINNER":
+            draw_game(False, mx, my, False, False)
             draw_winner()
             if now - winner_display_start > 3000:
                 app_state = "MENU"
