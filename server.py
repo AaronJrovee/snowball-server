@@ -139,8 +139,8 @@ class Player:
         self.kb_dx *= 0.85 
         self.kb_dy *= 0.85
 
-        speed_modifier = max(0.2, START_SIZE / max(START_SIZE, self.size))
-        active_vel = self.vel * speed_modifier
+        #speed_modifier = max(0.2, START_SIZE / max(START_SIZE, self.size))
+        active_vel = self.vel #* speed_modifier
 
         if self.stun_timer > 0:
             self.stun_timer -= 1

@@ -166,8 +166,8 @@ class OfflineEngine:
             p["kb_dx"] *= 0.85
             p["kb_dy"] *= 0.85
 
-            speed_modifier = max(0.2, START_SIZE / max(START_SIZE, p["size"]))
-            active_vel = 5 * speed_modifier
+            #speed_modifier = max(0.2, START_SIZE / max(START_SIZE, p["size"]))
+            active_vel = 5 #* speed_modifier
 
             if p["stun_timer"] > 0:
                 p["stun_timer"] -= 1
