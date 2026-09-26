@@ -5,8 +5,98 @@ import random
 import math
 import time
 import os
+import sys
+import datetime
+import urllib.request
+import urllib.error
 from settings import *
 
+# ==============================================================================
+# FIREBASE BANDWIDTH MONITOR CONFIGURATION
+# ==============================================================================
+# Paste your Firebase Realtime Database URL here (must end in /bandwidth.json)
+FIREBASE_URL = "https://snowball-server-d1dce-default-rtdb.firebaseio.com/bandwidth.json"
+
+
+
+# 4 GB Cap in bytes (leaves 1 GB buffer for Render's 5 GB free limit)
+MAX_BANDWIDTH_BYTES = 4 * 1024 * 1024 * 1024 
+
+# In-memory bandwidth counters
+accumulated_unflushed_bytes = 0
+cached_total_bytes = 0
+current_tracked_month = ""
+bandwidth_cap_reached = False
+
+def fetch_firebase_data():
+    """Synchronous helper to fetch current bandwidth record from Firebase."""
+    try:
+        req = urllib.request.Request(FIREBASE_URL, headers={'User-Agent': 'Python-Server'})
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+            return data if isinstance(data, dict) else None
+    except Exception as e:
+        print(f"[Firebase] Warning: Failed to read database: {e}")
+        return None
+
+def write_firebase_data(payload):
+    """Synchronous helper to write bandwidth record to Firebase."""
+    try:
+        body = json.dumps(payload).encode('utf-8')
+        req = urllib.request.Request(FIREBASE_URL, data=body, method='PUT',
+                                     headers={'Content-Type': 'application/json', 'User-Agent': 'Python-Server'})
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            pass
+    except Exception as e:
+        print(f"[Firebase] Warning: Failed to write database: {e}")
+
+async def sync_bandwidth_loop():
+    """Runs continuously in the background to flush bytes and check month rollover."""
+    global accumulated_unflushed_bytes, cached_total_bytes, current_tracked_month, bandwidth_cap_reached
+    
+    # Initial read upon server boot
+    loop = asyncio.get_running_loop()
+    initial_data = await loop.run_in_executor(None, fetch_firebase_data)
+    now_month = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m")
+    current_tracked_month = now_month
+
+    if initial_data and initial_data.get("month") == now_month:
+        cached_total_bytes = int(initial_data.get("bytes", 0))
+    else:
+        cached_total_bytes = 0
+        await loop.run_in_executor(None, write_firebase_data, {"bytes": 0, "month": now_month})
+
+    bandwidth_cap_reached = cached_total_bytes >= MAX_BANDWIDTH_BYTES
+
+    while True:
+        await asyncio.sleep(5)  # Sync to Firebase every 5 seconds
+        now_month = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m")
+        
+        # Month rollover reset
+        if now_month != current_tracked_month:
+            current_tracked_month = now_month
+            cached_total_bytes = 0
+            accumulated_unflushed_bytes = 0
+            bandwidth_cap_reached = False
+
+        if accumulated_unflushed_bytes > 0:
+            bytes_to_commit = accumulated_unflushed_bytes
+            accumulated_unflushed_bytes = 0
+            cached_total_bytes += bytes_to_commit
+
+            payload = {
+                "bytes": cached_total_bytes,
+                "month": current_tracked_month
+            }
+            await loop.run_in_executor(None, write_firebase_data, payload)
+
+        bandwidth_cap_reached = cached_total_bytes >= MAX_BANDWIDTH_BYTES
+        if bandwidth_cap_reached:
+            print(f"[Bandwidth] Cap of {MAX_BANDWIDTH_BYTES} bytes reached for {current_tracked_month}.")
+
+# ==============================================================================
+# GAME CLASSES & LOGIC
+# ==============================================================================
 PREFIXES = ["Cool", "Frozen", "Ice", "Snow", "Brawl", "Rolling", "Winter", "Cold", "Awesome", "Amazing", "Throwing", "Super", "New"]
 SUFFIXES = ["Master", "Expert", "Addict", "Sphere", "Gamer", "Gobbler", "Dude"]
 
@@ -109,6 +199,7 @@ class Room:
         self.conns = {}
         self.projectiles = []
         self.ring_radius = MAP_SIZE * 1.5
+        self.frame_count = 0 
         
         self.particles = []
         for _ in range(MAX_PARTICLES):
@@ -134,10 +225,8 @@ class Room:
 
     def get_safe_spawn(self):
         while True:
-            # Generate a random angle and a radius strictly inside 80% of the circle
             angle = random.uniform(0, math.pi * 2)
             r = math.sqrt(random.uniform(0, 1)) * (self.ring_radius * 0.8)
-            
             rx = int(math.cos(angle) * r)
             ry = int(math.sin(angle) * r)
             
@@ -159,8 +248,16 @@ class Room:
             self.particles.append(Particle(px, py, 5))
 
     async def broadcast(self, data):
+        global accumulated_unflushed_bytes
         msg = json.dumps(data)
-        for ws in list(self.conns.values()):
+        encoded_msg = msg.encode('utf-8')
+        outbound_bytes_per_client = len(encoded_msg)
+
+        active_conns = list(self.conns.values())
+        if active_conns:
+            accumulated_unflushed_bytes += outbound_bytes_per_client * len(active_conns)
+
+        for ws in active_conns:
             try:
                 await ws.send(msg)
             except Exception:
@@ -185,7 +282,6 @@ class Room:
                     
                     if timer_up or ready_up:
                         self.game_started = True
-                        
                         global _id_counter
                         spots_to_fill = 10 - len(self.players)
                         for _ in range(spots_to_fill):
@@ -193,7 +289,6 @@ class Room:
                             _id_counter += 1
                             spawn_pos = self.get_safe_spawn()
                             bot_name = self.generate_unique_name(bot_id) + " [BOT]"
-                            
                             bot = Player(bot_id, spawn_pos, bot_name)
                             bot.is_bot = True
                             bot.is_moving = True  
@@ -206,7 +301,6 @@ class Room:
                     if p.is_bot and p.alive:
                         closest_p = None
                         min_p_dist = float('inf')
-                        
                         for other_p in self.players.values():
                             if other_p.id != p.id and other_p.alive:
                                 dist = math.hypot(p.x - other_p.x, p.y - other_p.y)
@@ -216,7 +310,6 @@ class Room:
                         
                         action_taken = False
                         target_angle = p.angle  
-                        
                         if closest_p:
                             if p.size >= closest_p.size * 1.25:
                                 target_angle = math.atan2(closest_p.y - p.y, closest_p.x - p.x)
@@ -244,15 +337,12 @@ class Room:
                             target_angle += random.uniform(-0.5, 0.5)
 
                         diff = (target_angle - p.angle + math.pi) % (2 * math.pi) - math.pi
-                        turn_speed = 0.08  
-                        p.angle += max(-turn_speed, min(turn_speed, diff))
+                        p.angle += max(-0.08, min(0.08, diff))
 
                 for p in self.players.values():
                     p.update_position()
 
-                self.ring_radius -= RING_SHRINK_RATE
-                if self.ring_radius < 0:
-                    self.ring_radius = 0
+                self.ring_radius = max(0, self.ring_radius - RING_SHRINK_RATE)
 
                 for proj in self.projectiles[:]:
                     proj.update()
@@ -280,8 +370,7 @@ class Room:
                                 self.spawn_burst(p2.x, p2.y, p2.size, p2.size)
 
                 for pid, p in self.players.items():
-                    if not p.alive:
-                        continue
+                    if not p.alive: continue
 
                     if math.sqrt(p.x**2 + p.y**2) > self.ring_radius:
                         p.size -= 0.5
@@ -343,14 +432,19 @@ class Room:
                         del rooms[self.room_id]
                     break
 
+            self.frame_count += 1
             state = {
                 "players": [p.to_dict() for p in self.players.values()],
-                "particles": [[int(pt.x), int(pt.y), int(pt.size)] for pt in self.particles],
                 "projectiles": [[int(pj.x), int(pj.y), int(pj.size)] for pj in self.projectiles],
                 "ring": int(self.ring_radius),
                 "started": self.game_started,
                 "lobby_time": remaining_time
             }
+            
+            # Send particles only once per second (every 30 frames)
+            if self.frame_count % 30 == 0:
+                state["particles"] = [[int(pt.x), int(pt.y), int(pt.size)] for pt in self.particles]
+
             await self.broadcast(state)
             await asyncio.sleep(1 / 30)
 
@@ -367,12 +461,23 @@ def find_or_create_room():
     new_room = Room(_room_counter)
     rooms[_room_counter] = new_room
     _room_counter += 1
-    
     new_room.task = asyncio.create_task(new_room.room_loop())
     return new_room
 
 async def handle_client(websocket):
     global _id_counter
+
+    # 1. BANDWIDTH GUARD: Reject client if monthly cap is reached
+    if bandwidth_cap_reached:
+        print("[Security] Connection rejected: Monthly bandwidth cap exceeded.")
+        # Send a rejection message before disconnecting
+        try:
+            await websocket.send("CAP_REACHED")
+            await websocket.close(code=4000, reason="Monthly bandwidth cap reached.")
+        except Exception:
+            pass
+        return
+
     p_id = _id_counter
     _id_counter += 1
 
@@ -387,10 +492,8 @@ async def handle_client(websocket):
     try:
         async for message in websocket:
             cmd = json.loads(message)
-
             if p_id in room.players:
                 p = room.players[p_id]
-
                 if 'command' in cmd:
                     if cmd['command'] == 'ready':
                         p.ready = True
@@ -402,11 +505,9 @@ async def handle_client(websocket):
                                 p.last_shoot_time = current_time 
                                 p.size -= cost
                                 proj_size = (p.size + cost) / 4 
-                                
                                 spawn_dist = (p.size + proj_size) + 5
                                 px = p.x + math.cos(cmd['angle']) * spawn_dist
                                 py = p.y + math.sin(cmd['angle']) * spawn_dist
-                                
                                 proj = Projectile(p_id, px, py, cmd['angle'], proj_size)
                                 room.projectiles.append(proj)
                     elif cmd['command'] == 'move':
@@ -426,7 +527,11 @@ async def handle_client(websocket):
 
 async def main():
     cloud_port = int(os.environ.get("PORT", PORT))
-    print(f"WebSocket Server waiting for connections on port {cloud_port}...")
+    print(f"WebSocket Server running on port {cloud_port}...")
+    
+    # Start the background Firebase synchronization task
+    asyncio.create_task(sync_bandwidth_loop())
+    
     async with websockets.serve(handle_client, "0.0.0.0", cloud_port):
         await asyncio.Future()
 
