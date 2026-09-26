@@ -392,8 +392,8 @@ class Room:
                                 else:
                                     size_ratio = max(0.1, proj.size / p.size)
                                     p.stun_timer = int(proj.size * STUN_MULTIPLIER * size_ratio)
-                                    p.kb_dx = math.cos(proj.angle) * (proj.size * 1.5 * size_ratio)
-                                    p.kb_dy = math.sin(proj.angle) * (proj.size * 1.5 * size_ratio)
+                                    p.kb_dx = math.cos(proj.angle) * (proj.size * 2.5 * size_ratio)
+                                    p.kb_dy = math.sin(proj.angle) * (proj.size * 2.5 * size_ratio)
 
                     for other_id, other_p in self.players.items():
                         if pid != other_id and other_p.alive:

@@ -234,8 +234,8 @@ class OfflineEngine:
                         else:
                             ratio = max(0.1, proj[2] / p["size"])
                             p["stun_timer"] = int(proj[2] * STUN_MULTIPLIER * ratio)
-                            p["kb_dx"] = math.cos(proj[3]) * (proj[2] * 1.5 * ratio)
-                            p["kb_dy"] = math.sin(proj[3]) * (proj[2] * 1.5 * ratio)
+                            p["kb_dx"] = math.cos(proj[3]) * (proj[2] * 2.5 * ratio)
+                            p["kb_dy"] = math.sin(proj[3]) * (proj[2] * 2.5 * ratio)
 
             for other_p in self.players:
                 if p["id"] != other_p["id"] and other_p["alive"]:
@@ -607,11 +607,13 @@ async def main():
         keys = pygame.key.get_pressed()
         space_held = keys[pygame.K_SPACE]
 
+        # UI Cooldown & Size Check Restored
         can_shoot = False
         me = next((p for p in gamestate.get('players', []) if p['id'] == my_id), None)
         if me and me['alive'] and gamestate.get('started'):
             if (me['size'] - (me['size'] / 8)) >= START_SIZE:
-                can_shoot = True
+                if (now - last_shoot_time) >= 10000:
+                    can_shoot = True
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -645,6 +647,7 @@ async def main():
                         else:
                             pending_shoot_command = True
                         last_is_aiming = False
+                        last_shoot_time = now  # Reset UI cooldown timer
 
                 if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                     if not gamestate.get('started') and app_state == "GAME":
@@ -675,6 +678,7 @@ async def main():
                         else:
                             pending_shoot_command = True
                         last_is_aiming = False
+                        last_shoot_time = now  # Reset UI cooldown timer
 
         if app_state == "MENU":
             draw_menu()
@@ -746,6 +750,3 @@ async def main():
         except:
             pass
     pygame.quit()
-
-if __name__ == "__main__":
-    asyncio.run(main())
