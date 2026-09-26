@@ -750,3 +750,5 @@ async def main():
         except:
             pass
     pygame.quit()
+if __name__ == "__main__":
+    asyncio.run(main())
