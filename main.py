@@ -25,6 +25,21 @@ font_large = pygame.font.SysFont("Arial", 40, bold=True)
 font = pygame.font.SysFont("Arial", 20)
 font_small = pygame.font.SysFont("Arial", 16, bold=True)
 
+# --- IMAGE ASSET LOADING ---
+try:
+    snow_sprite = pygame.image.load("snowball.png").convert_alpha()
+except Exception:
+    try:
+        snow_sprite = pygame.image.load("snowball.jpg").convert_alpha()
+    except Exception:
+        snow_sprite = None
+
+try:
+    bg_sprite = pygame.image.load("ice_bg.png").convert()
+except Exception:
+        bg_sprite = None
+# ---------------------------
+
 app_state = "MENU"
 server_status = "OK"  
 client = None
@@ -167,8 +182,7 @@ class OfflineEngine:
             p["kb_dx"] *= 0.85
             p["kb_dy"] *= 0.85
 
-            #speed_modifier = max(0.2, START_SIZE / max(START_SIZE, p["size"]))
-            active_vel = 5 #* speed_modifier
+            active_vel = 5 
 
             if p["stun_timer"] > 0:
                 p["stun_timer"] -= 1
@@ -293,7 +307,6 @@ async def connect_to_server():
         is_capped = False
         
         if sys.platform == "emscripten":
-            # Web check using JS fetch to avoid blocking the Pygame thread
             window.eval("""
             window.bw_bytes = -1;
             fetch('https://snowball-server-d1dce-default-rtdb.firebaseio.com/bandwidth.json')
@@ -310,7 +323,6 @@ async def connect_to_server():
             if bw >= max_bytes:
                 is_capped = True
         else:
-            # Desktop check
             loop = asyncio.get_running_loop()
             def fetch_bw():
                 try:
@@ -332,7 +344,6 @@ async def connect_to_server():
         print(f"Pre-check failed, defaulting to server check: {e}")
     # -----------------------------------
 
-    
     url = f"wss://{HOST}" if "onrender.com" in HOST else f"ws://{HOST}:{PORT}"
     
     try:
@@ -440,7 +451,6 @@ def draw_menu():
     offline_btn = None
 
     if server_status == "OK":
-        # Widened to 280 to prevent PLAY ONLINE text overflow
         play_btn = pygame.Rect(WIDTH // 2 - 140, HEIGHT // 2, 280, 60)
         pygame.draw.rect(screen, (50, 150, 255), play_btn, border_radius=10)
         p_text = font_large.render("PLAY ONLINE", True, WHITE)
@@ -467,19 +477,29 @@ def draw_connecting():
     screen.blit(sub, (WIDTH // 2 - sub.get_width() // 2, HEIGHT // 2 + 30))
 
 def draw_winner():
-    # Create a translucent dark overlay
     overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
     overlay.fill((0, 0, 0, 150))
     screen.blit(overlay, (0, 0))
     
-    # Draw white text over the dark overlay
     w_text = font_large.render(winner_announcement, True, WHITE)
     sub_text = font.render("Returning to menu shortly...", True, (200, 200, 200))
     screen.blit(w_text, (WIDTH // 2 - w_text.get_width() // 2, HEIGHT // 2 - 40))
     screen.blit(sub_text, (WIDTH // 2 - sub_text.get_width() // 2, HEIGHT // 2 + 20))
 
 def draw_game(joystick_active, mx, my, can_shoot, space_held):
-    screen.fill(BG_COLOR)
+    # Render Tiled Ice Background
+    if bg_sprite:
+        for x in range(0, WIDTH, bg_sprite.get_width()):
+            for y in range(0, HEIGHT, bg_sprite.get_height()):
+                screen.blit(bg_sprite, (x, y))
+        # Draw a translucent filter using your original BG_COLOR
+        filter_surf = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+        # Using alpha 120 (0 is invisible, 255 is solid)
+        filter_surf.fill((BG_COLOR[0], BG_COLOR[1], BG_COLOR[2], 120))
+        screen.blit(filter_surf, (0, 0))
+    else:
+        screen.fill(BG_COLOR)
+
     if not gamestate:
         text = font.render("Loading...", True, BLACK)
         screen.blit(text, (WIDTH // 2 - text.get_width() // 2, HEIGHT // 2))
@@ -510,6 +530,20 @@ def draw_game(joystick_active, mx, my, can_shoot, space_held):
     if target_size > ZOOM_THRESHOLD:
         zoom = ZOOM_THRESHOLD / target_size
 
+    # --- MOVING BACKGROUND LOGIC ---
+    if bg_sprite:
+        bg_w, bg_h = bg_sprite.get_width(), bg_sprite.get_height()
+        # Calculate how far to shift the tiles based on the camera position and zoom
+        offset_x = -int(target_x * zoom) % bg_w
+        offset_y = -int(target_y * zoom) % bg_h
+        
+        for x in range(offset_x - bg_w, WIDTH, bg_w):
+            for y in range(offset_y - bg_h, HEIGHT, bg_h):
+                screen.blit(bg_sprite, (x, y))
+    else:
+        screen.fill(BG_COLOR)
+    # -------------------------------
+
     def to_screen(world_x, world_y):
         return (
             int((world_x - target_x) * zoom + WIDTH // 2),
@@ -520,22 +554,46 @@ def draw_game(joystick_active, mx, my, can_shoot, space_held):
     center_screen = to_screen(0, 0)
     pygame.draw.circle(screen, ORANGE, center_screen, max(1, int(ring_r * zoom)), max(1, int(5 * zoom)))
 
+    # Render Snow Particles with Image
     for p in gamestate.get('particles', []):
         sx, sy = to_screen(p[0], p[1])
-        pygame.draw.circle(screen, WHITE, (sx, sy), max(1, int(p[2] * zoom)))
+        scaled_p_size = max(1, int(p[2] * zoom))
+        if snow_sprite:
+            p_img = pygame.transform.scale(snow_sprite, (scaled_p_size * 2, scaled_p_size * 2))
+            screen.blit(p_img, p_img.get_rect(center=(sx, sy)))
+        else:
+            pygame.draw.circle(screen, WHITE, (sx, sy), scaled_p_size)
 
+    # Render Projectiles with Image
     for p in gamestate.get('projectiles', []):
         sx, sy = to_screen(p[0], p[1])
-        pygame.draw.circle(screen, (255, 255, 255), (sx, sy), max(1, int(p[2] * zoom)))
+        scaled_p_size = max(1, int(p[2] * zoom))
+        if snow_sprite:
+            p_img = pygame.transform.scale(snow_sprite, (scaled_p_size * 2, scaled_p_size * 2))
+            screen.blit(p_img, p_img.get_rect(center=(sx, sy)))
+        else:
+            pygame.draw.circle(screen, (255, 255, 255), (sx, sy), scaled_p_size)
 
+    # Render Players with Scaled & Rotated Images
     for p in gamestate.get('players', []):
         if not p['alive']: continue
 
         sx, sy = to_screen(p['x'], p['y'])
         scaled_size = max(1, int(p['size'] * zoom))
         
-        color = YELLOWISH_WHITE if p['id'] == my_id else (240, 240, 200)
-        pygame.draw.circle(screen, color, (sx, sy), scaled_size)
+        if snow_sprite:
+            # Scale exactly to fit player's current size
+            current_img = pygame.transform.scale(snow_sprite, (scaled_size * 2, scaled_size * 2))
+            
+            # Rotate sprite based on player's moving angle
+            current_img = pygame.transform.rotate(current_img, math.degrees(-p['angle']))
+            
+            img_rect = current_img.get_rect(center=(sx, sy))
+            screen.blit(current_img, img_rect)
+           
+        else:
+            color = YELLOWISH_WHITE if p['id'] == my_id else (240, 240, 200)
+            pygame.draw.circle(screen, color, (sx, sy), scaled_size)
 
         if p.get('is_aiming'):
             aim_angle = p.get('aim_angle', 0)
@@ -546,7 +604,7 @@ def draw_game(joystick_active, mx, my, can_shoot, space_held):
             shared_ray_surf.fill((0, 0, 0, 0))
             pygame.draw.line(shared_ray_surf, (255, 255, 255, 80), (sx, sy), (end_x, end_y), max(2, int(8 * zoom)))
             screen.blit(shared_ray_surf, (0, 0))
-        else:
+        elif not snow_sprite:
             angle = p['angle']
             tip_x = sx + math.cos(angle) * (scaled_size + 25 * zoom)
             tip_y = sy + math.sin(angle) * (scaled_size + 25 * zoom)
@@ -570,17 +628,14 @@ def draw_game(joystick_active, mx, my, can_shoot, space_held):
         s.fill((0, 0, 0, 150))
         screen.blit(s, (0, 0))
 
-        # Filter out bots to only count real players
         human_players = [p for p in gamestate.get('players', []) if not p.get('is_bot', False)]
         
-        # Display real players in the top left
         title_surf = font_small.render(f"LOBBY ({len(human_players)}/10):", True, WHITE)
         screen.blit(title_surf, (15, 15))
         for i, p in enumerate(human_players):
             name_surf = font_small.render(f"- {p.get('name', 'Unknown')}", True, WHITE)
             screen.blit(name_surf, (15, 40 + i * 25))
 
-        # Only show the timer and Ready button if 2+ players are present
         if len(human_players) >= 2:
             lobby_time = gamestate.get('lobby_time', 60)
             timer_text = font_large.render(f"Starts in: {lobby_time}s", True, WHITE)
@@ -674,7 +729,6 @@ async def main():
         keys = pygame.key.get_pressed()
         space_held = keys[pygame.K_SPACE]
 
-        # UI Cooldown & Size Check Restored
         can_shoot = False
         me = next((p for p in gamestate.get('players', []) if p['id'] == my_id), None)
         if me and me['alive'] and gamestate.get('started'):
@@ -716,7 +770,7 @@ async def main():
                         else:
                             pending_shoot_command = True
                         last_is_aiming = False
-                        last_shoot_time = now  # Reset UI cooldown timer
+                        last_shoot_time = now 
 
                 if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                     if not gamestate.get('started') and app_state == "GAME":
@@ -749,7 +803,7 @@ async def main():
                         else:
                             pending_shoot_command = True
                         last_is_aiming = False
-                        last_shoot_time = now  # Reset UI cooldown timer
+                        last_shoot_time = now 
 
         if app_state == "MENU":
             draw_menu()
