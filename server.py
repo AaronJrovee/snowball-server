@@ -167,7 +167,8 @@ class Player:
             "ready": self.ready,
             "name": self.name,
             "is_aiming": self.is_aiming,
-            "aim_angle": self.aim_angle
+            "aim_angle": self.aim_angle,
+            "is_bot": self.is_bot  # <-- Added this line
         }
 
 class Particle:
@@ -267,18 +268,19 @@ class Room:
         while self.running:
             remaining_time = self.lobby_duration
             if not self.game_started:
-                if len(self.players) > 0:  
+                human_players = [p for p in self.players.values() if not p.is_bot]
+                
+                if len(human_players) >= 2:  # <-- Now requires 2+ real players
                     if self.lobby_timer_start is None:
                         self.lobby_timer_start = time.time()
                     
                     elapsed = time.time() - self.lobby_timer_start
                     remaining_time = max(0, int(self.lobby_duration - elapsed))
                     
-                    human_players = [p for p in self.players.values() if not p.is_bot]
                     ready_count = sum(1 for p in human_players if p.ready)
                     
                     timer_up = elapsed >= self.lobby_duration
-                    ready_up = len(human_players) >= 1 and ready_count == len(human_players)
+                    ready_up = ready_count == len(human_players)
                     
                     if timer_up or ready_up:
                         self.game_started = True
@@ -295,6 +297,7 @@ class Room:
                             self.players[bot_id] = bot
                 else:
                     self.lobby_timer_start = None
+                    remaining_time = self.lobby_duration
 
             if self.game_started:
                 for p in self.players.values():

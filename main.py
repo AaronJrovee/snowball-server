@@ -6,6 +6,7 @@ import sys
 import time
 import random
 import importlib
+import urllib.request
 from settings import *
 
 if sys.platform == "emscripten":
@@ -286,6 +287,52 @@ async def send(data):
 async def connect_to_server():
     global client, my_id, app_state, server_status
     
+    # --- CLIENT-SIDE BANDWIDTH CHECK ---
+    try:
+        max_bytes = 4 * 1024 * 1024 * 1024
+        is_capped = False
+        
+        if sys.platform == "emscripten":
+            # Web check using JS fetch to avoid blocking the Pygame thread
+            window.eval("""
+            window.bw_bytes = -1;
+            fetch('https://snowball-server-d1dce-default-rtdb.firebaseio.com/bandwidth.json')
+              .then(r => r.json())
+              .then(d => { window.bw_bytes = d ? (d.bytes || 0) : 0; })
+              .catch(e => { window.bw_bytes = 0; });
+            """)
+            timeout = 0
+            while int(window.eval("window.bw_bytes")) == -1 and timeout < 3:
+                await asyncio.sleep(0.1)
+                timeout += 0.1
+            
+            bw = int(window.eval("window.bw_bytes"))
+            if bw >= max_bytes:
+                is_capped = True
+        else:
+            # Desktop check
+            loop = asyncio.get_running_loop()
+            def fetch_bw():
+                try:
+                    req = urllib.request.Request("https://snowball-server-d1dce-default-rtdb.firebaseio.com/bandwidth.json")
+                    with urllib.request.urlopen(req, timeout=3) as resp:
+                        data = json.loads(resp.read().decode('utf-8'))
+                        return data.get("bytes", 0) if isinstance(data, dict) else 0
+                except:
+                    return 0
+            bw = await loop.run_in_executor(None, fetch_bw)
+            if bw >= max_bytes:
+                is_capped = True
+                
+        if is_capped:
+            server_status = "CAPPED"
+            app_state = "MENU"
+            return
+    except Exception as e:
+        print(f"Pre-check failed, defaulting to server check: {e}")
+    # -----------------------------------
+
+    
     url = f"wss://{HOST}" if "onrender.com" in HOST else f"ws://{HOST}:{PORT}"
     
     try:
@@ -523,19 +570,34 @@ def draw_game(joystick_active, mx, my, can_shoot, space_held):
         s.fill((0, 0, 0, 150))
         screen.blit(s, (0, 0))
 
-        lobby_time = gamestate.get('lobby_time', 60)
-        timer_text = font_large.render(f"Starts in: {lobby_time}s", True, WHITE)
-        screen.blit(timer_text, (WIDTH // 2 - timer_text.get_width() // 2, HEIGHT // 2 - 100))
-
-        status = "READY" if me and me.get('ready') else "NOT READY"
-        btn_color = (40, 180, 40) if status == "READY" else (220, 50, 50)
+        # Filter out bots to only count real players
+        human_players = [p for p in gamestate.get('players', []) if not p.get('is_bot', False)]
         
-        btn_rect = pygame.Rect(WIDTH // 2 - 110, HEIGHT // 2 - 30, 220, 60)
-        pygame.draw.rect(screen, btn_color, btn_rect, border_radius=10)
-        pygame.draw.rect(screen, WHITE, btn_rect, width=2, border_radius=10)
+        # Display real players in the top left
+        title_surf = font_small.render(f"LOBBY ({len(human_players)}/10):", True, WHITE)
+        screen.blit(title_surf, (15, 15))
+        for i, p in enumerate(human_players):
+            name_surf = font_small.render(f"- {p.get('name', 'Unknown')}", True, WHITE)
+            screen.blit(name_surf, (15, 40 + i * 25))
 
-        label = font.render(f"Status: {status}", True, WHITE)
-        screen.blit(label, (btn_rect.centerx - label.get_width() // 2, btn_rect.centery - label.get_height() // 2))
+        # Only show the timer and Ready button if 2+ players are present
+        if len(human_players) >= 2:
+            lobby_time = gamestate.get('lobby_time', 60)
+            timer_text = font_large.render(f"Starts in: {lobby_time}s", True, WHITE)
+            screen.blit(timer_text, (WIDTH // 2 - timer_text.get_width() // 2, HEIGHT // 2 - 100))
+
+            status = "READY" if me and me.get('ready') else "NOT READY"
+            btn_color = (40, 180, 40) if status == "READY" else (220, 50, 50)
+            
+            btn_rect = pygame.Rect(WIDTH // 2 - 110, HEIGHT // 2 - 30, 220, 60)
+            pygame.draw.rect(screen, btn_color, btn_rect, border_radius=10)
+            pygame.draw.rect(screen, WHITE, btn_rect, width=2, border_radius=10)
+
+            label = font.render(f"Status: {status}", True, WHITE)
+            screen.blit(label, (btn_rect.centerx - label.get_width() // 2, btn_rect.centery - label.get_height() // 2))
+        else:
+            waiting = font_large.render("Waiting for 2+ players...", True, WHITE)
+            screen.blit(waiting, (WIDTH // 2 - waiting.get_width() // 2, HEIGHT // 2 - 30))
 
     if gamestate.get('started'):
         sorted_players = sorted(gamestate.get('players', []), key=lambda x: x['size'], reverse=True)
@@ -638,7 +700,9 @@ async def main():
             elif app_state in ["GAME", "OFFLINE_GAME"]:
                 if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
                     if not gamestate.get('started') and app_state == "GAME":
-                        asyncio.create_task(send({"command": "ready"}))
+                        human_players = [p for p in gamestate.get('players', []) if not p.get('is_bot', False)]
+                        if len(human_players) >= 2:
+                            asyncio.create_task(send({"command": "ready"}))
                     elif can_shoot and pygame.mouse.get_pressed()[0]:
                         space_aim_active = True
 
@@ -656,10 +720,12 @@ async def main():
 
                 if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                     if not gamestate.get('started') and app_state == "GAME":
-                        btn_ready = pygame.Rect(WIDTH // 2 - 110, HEIGHT // 2 - 30, 220, 60)
-                        if btn_ready.collidepoint(event.pos):
-                            asyncio.create_task(send({"command": "ready"}))
-                            continue 
+                        human_players = [p for p in gamestate.get('players', []) if not p.get('is_bot', False)]
+                        if len(human_players) >= 2:
+                            btn_ready = pygame.Rect(WIDTH // 2 - 110, HEIGHT // 2 - 30, 220, 60)
+                            if btn_ready.collidepoint(event.pos):
+                                asyncio.create_task(send({"command": "ready"}))
+                                continue
                             
                     if gamestate.get('started') and can_shoot:
                         if space_held:
