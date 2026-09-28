@@ -251,8 +251,8 @@ class OfflineEngine:
                         else:
                             ratio = max(0.1, proj[2] / p["size"])
                             p["stun_timer"] = int(proj[2] * STUN_MULTIPLIER * ratio)
-                            p["kb_dx"] = math.cos(proj[3]) * (proj[2] * 3 * ratio)
-                            p["kb_dy"] = math.sin(proj[3]) * (proj[2] * 3 * ratio)
+                            p["kb_dx"] = math.cos(proj[3]) * (proj[2] * 6 * ratio)
+                            p["kb_dy"] = math.sin(proj[3]) * (proj[2] * 6 * ratio)
 
             for other_p in self.players:
                 if p["id"] != other_p["id"] and other_p["alive"]:
