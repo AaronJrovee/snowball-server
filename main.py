@@ -50,9 +50,11 @@ winner_display_start = 0
 
 msg_queue = [] 
 
-# Joystick Configuration
+# Joystick & UI Configuration
 JOY_CENTER = (WIDTH - 120, HEIGHT - 120)
 JOY_RADIUS = 70
+TOGGLE_BTN_RECT = pygame.Rect(WIDTH - 150, 15, 135, 35)
+use_textures = False 
 
 shared_ray_surf = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
 offline_engine = None
@@ -487,20 +489,10 @@ def draw_winner():
     screen.blit(sub_text, (WIDTH // 2 - sub_text.get_width() // 2, HEIGHT // 2 + 20))
 
 def draw_game(joystick_active, mx, my, can_shoot, space_held):
-    # Render Tiled Ice Background
-    if bg_sprite:
-        for x in range(0, WIDTH, bg_sprite.get_width()):
-            for y in range(0, HEIGHT, bg_sprite.get_height()):
-                screen.blit(bg_sprite, (x, y))
-        # Draw a translucent filter using your original BG_COLOR
-        filter_surf = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
-        # Using alpha 120 (0 is invisible, 255 is solid)
-        filter_surf.fill((BG_COLOR[0], BG_COLOR[1], BG_COLOR[2], 120))
-        screen.blit(filter_surf, (0, 0))
-    else:
-        screen.fill(BG_COLOR)
+    global use_textures
 
     if not gamestate:
+        screen.fill(BG_COLOR)
         text = font.render("Loading...", True, BLACK)
         screen.blit(text, (WIDTH // 2 - text.get_width() // 2, HEIGHT // 2))
         return
@@ -530,19 +522,21 @@ def draw_game(joystick_active, mx, my, can_shoot, space_held):
     if target_size > ZOOM_THRESHOLD:
         zoom = ZOOM_THRESHOLD / target_size
 
-    # --- MOVING BACKGROUND LOGIC ---
-    if bg_sprite:
+    # --- MOVING BACKGROUND LOGIC CONSOLIDATED ---
+    if bg_sprite and use_textures:
         bg_w, bg_h = bg_sprite.get_width(), bg_sprite.get_height()
-        # Calculate how far to shift the tiles based on the camera position and zoom
         offset_x = -int(target_x * zoom) % bg_w
         offset_y = -int(target_y * zoom) % bg_h
         
         for x in range(offset_x - bg_w, WIDTH, bg_w):
             for y in range(offset_y - bg_h, HEIGHT, bg_h):
                 screen.blit(bg_sprite, (x, y))
+                
+        filter_surf = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+        filter_surf.fill((BG_COLOR[0], BG_COLOR[1], BG_COLOR[2], 120))
+        screen.blit(filter_surf, (0, 0))
     else:
         screen.fill(BG_COLOR)
-    # -------------------------------
 
     def to_screen(world_x, world_y):
         return (
@@ -554,43 +548,37 @@ def draw_game(joystick_active, mx, my, can_shoot, space_held):
     center_screen = to_screen(0, 0)
     pygame.draw.circle(screen, ORANGE, center_screen, max(1, int(ring_r * zoom)), max(1, int(5 * zoom)))
 
-    # Render Snow Particles with Image
+    # Render Snow Particles
     for p in gamestate.get('particles', []):
         sx, sy = to_screen(p[0], p[1])
         scaled_p_size = max(1, int(p[2] * zoom))
-        if snow_sprite:
+        if snow_sprite and use_textures:
             p_img = pygame.transform.scale(snow_sprite, (scaled_p_size * 2, scaled_p_size * 2))
             screen.blit(p_img, p_img.get_rect(center=(sx, sy)))
         else:
             pygame.draw.circle(screen, WHITE, (sx, sy), scaled_p_size)
 
-    # Render Projectiles with Image
+    # Render Projectiles
     for p in gamestate.get('projectiles', []):
         sx, sy = to_screen(p[0], p[1])
         scaled_p_size = max(1, int(p[2] * zoom))
-        if snow_sprite:
+        if snow_sprite and use_textures:
             p_img = pygame.transform.scale(snow_sprite, (scaled_p_size * 2, scaled_p_size * 2))
             screen.blit(p_img, p_img.get_rect(center=(sx, sy)))
         else:
             pygame.draw.circle(screen, (255, 255, 255), (sx, sy), scaled_p_size)
 
-    # Render Players with Scaled & Rotated Images
+    # Render Players (Rotation Removed)
     for p in gamestate.get('players', []):
         if not p['alive']: continue
 
         sx, sy = to_screen(p['x'], p['y'])
         scaled_size = max(1, int(p['size'] * zoom))
         
-        if snow_sprite:
-            # Scale exactly to fit player's current size
+        if snow_sprite and use_textures:
             current_img = pygame.transform.scale(snow_sprite, (scaled_size * 2, scaled_size * 2))
-            
-            # Rotate sprite based on player's moving angle
-            current_img = pygame.transform.rotate(current_img, math.degrees(-p['angle']))
-            
             img_rect = current_img.get_rect(center=(sx, sy))
             screen.blit(current_img, img_rect)
-           
         else:
             color = YELLOWISH_WHITE if p['id'] == my_id else (240, 240, 200)
             pygame.draw.circle(screen, color, (sx, sy), scaled_size)
@@ -604,7 +592,7 @@ def draw_game(joystick_active, mx, my, can_shoot, space_held):
             shared_ray_surf.fill((0, 0, 0, 0))
             pygame.draw.line(shared_ray_surf, (255, 255, 255, 80), (sx, sy), (end_x, end_y), max(2, int(8 * zoom)))
             screen.blit(shared_ray_surf, (0, 0))
-        elif not snow_sprite:
+        elif not (snow_sprite and use_textures):
             angle = p['angle']
             tip_x = sx + math.cos(angle) * (scaled_size + 25 * zoom)
             tip_y = sy + math.sin(angle) * (scaled_size + 25 * zoom)
@@ -682,6 +670,13 @@ def draw_game(joystick_active, mx, my, can_shoot, space_held):
             screen.blit(txt_surface, (15, y_offset))
             y_offset += 22
 
+    # Draw Toggle Button
+    pygame.draw.rect(screen, (70, 70, 70), TOGGLE_BTN_RECT, border_radius=5)
+    pygame.draw.rect(screen, (200, 200, 200), TOGGLE_BTN_RECT, width=2, border_radius=5)
+    btn_text = "Textures: ON" if use_textures else "Textures: OFF"
+    t_surf = font_small.render(btn_text, True, WHITE)
+    screen.blit(t_surf, (TOGGLE_BTN_RECT.centerx - t_surf.get_width() // 2, TOGGLE_BTN_RECT.centery - t_surf.get_height() // 2))
+
     if me and me['alive'] and gamestate.get('started') and can_shoot and not space_held:
         KNOB_RADIUS = 25
         surf_width = (JOY_RADIUS + KNOB_RADIUS) * 2
@@ -710,7 +705,7 @@ def draw_game(joystick_active, mx, my, can_shoot, space_held):
 # MAIN LOOP
 # ==============================================================================
 async def main():
-    global app_state, gamestate, my_id, offline_engine, winner_announcement, winner_display_start
+    global app_state, gamestate, my_id, offline_engine, winner_announcement, winner_display_start, use_textures
     running = True
     last_angle = 0
     last_moving = False
@@ -752,6 +747,26 @@ async def main():
                         my_id = 0
 
             elif app_state in ["GAME", "OFFLINE_GAME"]:
+                if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    # Check Toggle Button Click First
+                    if TOGGLE_BTN_RECT.collidepoint(event.pos):
+                        use_textures = not use_textures
+                        continue
+
+                    if not gamestate.get('started') and app_state == "GAME":
+                        human_players = [p for p in gamestate.get('players', []) if not p.get('is_bot', False)]
+                        if len(human_players) >= 2:
+                            btn_ready = pygame.Rect(WIDTH // 2 - 110, HEIGHT // 2 - 30, 220, 60)
+                            if btn_ready.collidepoint(event.pos):
+                                asyncio.create_task(send({"command": "ready"}))
+                                continue
+                            
+                    if gamestate.get('started') and can_shoot:
+                        if space_held:
+                            space_aim_active = True
+                        elif math.hypot(event.pos[0] - JOY_CENTER[0], event.pos[1] - JOY_CENTER[1]) <= JOY_RADIUS:
+                            joystick_active = True
+
                 if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
                     if not gamestate.get('started') and app_state == "GAME":
                         human_players = [p for p in gamestate.get('players', []) if not p.get('is_bot', False)]
@@ -771,21 +786,6 @@ async def main():
                             pending_shoot_command = True
                         last_is_aiming = False
                         last_shoot_time = now 
-
-                if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                    if not gamestate.get('started') and app_state == "GAME":
-                        human_players = [p for p in gamestate.get('players', []) if not p.get('is_bot', False)]
-                        if len(human_players) >= 2:
-                            btn_ready = pygame.Rect(WIDTH // 2 - 110, HEIGHT // 2 - 30, 220, 60)
-                            if btn_ready.collidepoint(event.pos):
-                                asyncio.create_task(send({"command": "ready"}))
-                                continue
-                            
-                    if gamestate.get('started') and can_shoot:
-                        if space_held:
-                            space_aim_active = True
-                        elif math.hypot(event.pos[0] - JOY_CENTER[0], event.pos[1] - JOY_CENTER[1]) <= JOY_RADIUS:
-                            joystick_active = True
                 
                 if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
                     if joystick_active or space_aim_active:
