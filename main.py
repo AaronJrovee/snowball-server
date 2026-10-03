@@ -614,7 +614,8 @@ def draw_game(joystick_active, mx, my, can_shoot, space_held):
         for player in gamestate.get('players', []):
             if player['alive'] and math.hypot(player['x'] - p[0], player['y'] - p[1]) < player['size'] + p[2]:
                 eaten = True
-                if player['id'] == my_id and collect_sound:
+                # In offline mode my_id is None, but the human is always id 0
+                if (player['id'] == my_id or (app_state == "OFFLINE_GAME" and player['id'] == 0)) and collect_sound:
                     collect_sound.play()
                 break
         if not eaten:
@@ -668,7 +669,7 @@ def draw_game(joystick_active, mx, my, can_shoot, space_held):
             
             pygame.draw.line(shared_ray_surf, (255, 255, 255, 80), (sx, sy), (end_x, end_y), ray_width)
             screen.blit(shared_ray_surf, (0, 0))
-        elif not (snow_sprite and use_textures):
+        else:
             angle = vp['angle']
             tip_x = sx + math.cos(angle) * (scaled_size + 25 * zoom)
             tip_y = sy + math.sin(angle) * (scaled_size + 25 * zoom)
