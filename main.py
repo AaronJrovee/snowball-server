@@ -88,7 +88,7 @@ class OfflineEngine:
 
         # Human Player
         self.players.append({
-            "id": 0, "x": 0, "y": 0, "size": START_SIZE, "angle": 0, "alive": True,
+            "id": 0, "x": 0, "y": 0, "size": START_SIZE, "target_size": START_SIZE, "angle": 0, "alive": True,
             "name": get_name(0), "is_aiming": False, "aim_angle": 0, "kb_dx": 0, "kb_dy": 0,
             "last_shoot": 0, "is_moving": False, "is_bot": False, "stun_timer": 0
         })
@@ -98,7 +98,7 @@ class OfflineEngine:
             a = random.uniform(0, math.pi * 2)
             r = math.sqrt(random.uniform(0, 1)) * (self.ring * 0.8)
             self.players.append({
-                "id": i, "x": r * math.cos(a), "y": r * math.sin(a), "size": START_SIZE,
+                "id": i, "x": r * math.cos(a), "y": r * math.sin(a), "size": START_SIZE, "target_size": START_SIZE,
                 "angle": 0, "alive": True, "name": get_name(i) + " [BOT]", "is_aiming": False,
                 "aim_angle": 0, "kb_dx": 0, "kb_dy": 0, "last_shoot": 0, "is_moving": True,
                 "is_bot": True, "stun_timer": 0
@@ -123,13 +123,16 @@ class OfflineEngine:
                 me["last_shoot"] = time.time()
                 cost = me["size"] / 8
                 me["size"] -= cost
+                me["target_size"] -= cost
                 psize = (me["size"] + cost) / 4
                 dist = me["size"] + psize + 5
-                # format: x, y, size, angle, owner_id, life
+                speed = 10 + (psize * 0.2)
+                life = int(40 + psize)
+                # format: x, y, size, angle, owner_id, life, speed
                 self.projectiles.append([
                     me["x"] + math.cos(aim_angle) * dist, 
                     me["y"] + math.sin(aim_angle) * dist, 
-                    psize, aim_angle, 0, 60
+                    psize, aim_angle, 0, life, speed
                 ])
 
         # Exact server Bot AI
@@ -200,8 +203,8 @@ class OfflineEngine:
 
         # Projectile updates
         for proj in self.projectiles[:]:
-            proj[0] += math.cos(proj[3]) * 10
-            proj[1] += math.sin(proj[3]) * 10
+            proj[0] += math.cos(proj[3]) * proj[6]
+            proj[1] += math.sin(proj[3]) * proj[6]
             proj[5] -= 1
             if proj[5] <= 0:
                 self.projectiles.remove(proj)
@@ -234,11 +237,12 @@ class OfflineEngine:
 
             if math.hypot(p["x"], p["y"]) > self.ring:
                 p["size"] -= 0.5
+                p["target_size"] = p["size"]
                 if p["size"] <= 5: p["alive"] = False
 
             for part in self.particles[:]:
                 if math.hypot(p["x"] - part[0], p["y"] - part[1]) < p["size"] + part[2]:
-                    p["size"] += part[2] * 0.1
+                    p["target_size"] += part[2] * 0.1
                     self.particles.remove(part)
 
             for proj in self.projectiles[:]:
@@ -259,6 +263,7 @@ class OfflineEngine:
                     if math.hypot(p["x"] - other_p["x"], p["y"] - other_p["y"]) < p["size"]:
                         if p["size"] >= other_p["size"] * 1.25:
                             other_p["alive"] = False
+                            p["target_size"] += other_p["size"] * 0.5
                             self.spawn_burst(other_p["x"], other_p["y"], other_p["size"] * 0.5, other_p["size"])
 
         # Particle ring-cull & respawn
@@ -270,6 +275,14 @@ class OfflineEngine:
             a = random.uniform(0, math.pi * 2)
             r = math.sqrt(random.uniform(0, 1)) * max(1, self.ring)
             self.particles.append([r * math.cos(a), r * math.sin(a), 5])
+
+        # Smooth scaling
+        for p in self.players:
+            if p["alive"]:
+                if p["size"] < p["target_size"]:
+                    p["size"] += (p["target_size"] - p["size"]) * 0.1
+                elif p["size"] > p["target_size"]:
+                    p["size"] = p["target_size"]
 
         return {
             "players": self.players,
@@ -548,15 +561,25 @@ def draw_game(joystick_active, mx, my, can_shoot, space_held):
     center_screen = to_screen(0, 0)
     pygame.draw.circle(screen, ORANGE, center_screen, max(1, int(ring_r * zoom)), max(1, int(5 * zoom)))
 
-    # Render Snow Particles
+    # Render Snow Particles (With Immediate Eaten Glitch Fix)
+    valid_particles = []
     for p in gamestate.get('particles', []):
-        sx, sy = to_screen(p[0], p[1])
-        scaled_p_size = max(1, int(p[2] * zoom))
-        if snow_sprite and use_textures:
-            p_img = pygame.transform.scale(snow_sprite, (scaled_p_size * 2, scaled_p_size * 2))
-            screen.blit(p_img, p_img.get_rect(center=(sx, sy)))
-        else:
-            pygame.draw.circle(screen, WHITE, (sx, sy), scaled_p_size)
+        eaten = False
+        for player in gamestate.get('players', []):
+            if player['alive'] and math.hypot(player['x'] - p[0], player['y'] - p[1]) < player['size'] + p[2]:
+                eaten = True
+                break
+        if not eaten:
+            valid_particles.append(p)
+            sx, sy = to_screen(p[0], p[1])
+            scaled_p_size = max(1, int(p[2] * zoom))
+            if snow_sprite and use_textures:
+                p_img = pygame.transform.scale(snow_sprite, (scaled_p_size * 2, scaled_p_size * 2))
+                screen.blit(p_img, p_img.get_rect(center=(sx, sy)))
+            else:
+                pygame.draw.circle(screen, WHITE, (sx, sy), scaled_p_size)
+    
+    gamestate['particles'] = valid_particles
 
     # Render Projectiles
     for p in gamestate.get('projectiles', []):
@@ -590,9 +613,15 @@ def draw_game(joystick_active, mx, my, can_shoot, space_held):
             end_y = int(sy + math.sin(aim_angle) * ray_length)
             
             shared_ray_surf.fill((0, 0, 0, 0))
-            pygame.draw.line(shared_ray_surf, (255, 255, 255, 80), (sx, sy), (end_x, end_y), max(2, int(8 * zoom)))
+            
+            # Width = diameter of projectile snowball
+            p_size = p.get('size', START_SIZE)
+            proj_size = (p_size + (p_size / 8)) / 4
+            ray_width = max(2, int((proj_size * 2) * zoom))
+            
+            pygame.draw.line(shared_ray_surf, (255, 255, 255, 80), (sx, sy), (end_x, end_y), ray_width)
             screen.blit(shared_ray_surf, (0, 0))
-        elif not (snow_sprite and use_textures):
+        else:
             angle = p['angle']
             tip_x = sx + math.cos(angle) * (scaled_size + 25 * zoom)
             tip_y = sy + math.sin(angle) * (scaled_size + 25 * zoom)

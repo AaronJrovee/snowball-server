@@ -14,22 +14,15 @@ from settings import *
 # ==============================================================================
 # FIREBASE BANDWIDTH MONITOR CONFIGURATION
 # ==============================================================================
-# Paste your Firebase Realtime Database URL here (must end in /bandwidth.json)
 FIREBASE_URL = "https://snowball-server-d1dce-default-rtdb.firebaseio.com/bandwidth.json"
-
-
-
-# 4 GB Cap in bytes (leaves 1 GB buffer for Render's 5 GB free limit)
 MAX_BANDWIDTH_BYTES = 4 * 1024 * 1024 * 1024 
 
-# In-memory bandwidth counters
 accumulated_unflushed_bytes = 0
 cached_total_bytes = 0
 current_tracked_month = ""
 bandwidth_cap_reached = False
 
 def fetch_firebase_data():
-    """Synchronous helper to fetch current bandwidth record from Firebase."""
     try:
         req = urllib.request.Request(FIREBASE_URL, headers={'User-Agent': 'Python-Server'})
         with urllib.request.urlopen(req, timeout=3) as resp:
@@ -40,7 +33,6 @@ def fetch_firebase_data():
         return None
 
 def write_firebase_data(payload):
-    """Synchronous helper to write bandwidth record to Firebase."""
     try:
         body = json.dumps(payload).encode('utf-8')
         req = urllib.request.Request(FIREBASE_URL, data=body, method='PUT',
@@ -51,10 +43,8 @@ def write_firebase_data(payload):
         print(f"[Firebase] Warning: Failed to write database: {e}")
 
 async def sync_bandwidth_loop():
-    """Runs continuously in the background to flush bytes and check month rollover."""
     global accumulated_unflushed_bytes, cached_total_bytes, current_tracked_month, bandwidth_cap_reached
     
-    # Initial read upon server boot
     loop = asyncio.get_running_loop()
     initial_data = await loop.run_in_executor(None, fetch_firebase_data)
     now_month = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m")
@@ -69,10 +59,9 @@ async def sync_bandwidth_loop():
     bandwidth_cap_reached = cached_total_bytes >= MAX_BANDWIDTH_BYTES
 
     while True:
-        await asyncio.sleep(5)  # Sync to Firebase every 5 seconds
+        await asyncio.sleep(5)
         now_month = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m")
         
-        # Month rollover reset
         if now_month != current_tracked_month:
             current_tracked_month = now_month
             cached_total_bytes = 0
@@ -105,6 +94,7 @@ class Player:
         self.id = player_id
         self.x, self.y = pos
         self.size = START_SIZE
+        self.target_size = START_SIZE
         self.color = YELLOWISH_WHITE
         self.angle = 0
         self.vel = 5  
@@ -139,8 +129,7 @@ class Player:
         self.kb_dx *= 0.85 
         self.kb_dy *= 0.85
 
-        #speed_modifier = max(0.2, START_SIZE / max(START_SIZE, self.size))
-        active_vel = self.vel #* speed_modifier
+        active_vel = self.vel 
 
         if self.stun_timer > 0:
             self.stun_timer -= 1
@@ -155,6 +144,12 @@ class Player:
                 dy = math.sin(self.angle) * active_vel
                 self.x += dx
                 self.y += dy
+                
+        # Smooth scaling
+        if self.size < self.target_size:
+            self.size += (self.target_size - self.size) * 0.1
+        elif self.size > self.target_size:
+            self.size = self.target_size
 
     def to_dict(self):
         return {
@@ -168,7 +163,7 @@ class Player:
             "name": self.name,
             "is_aiming": self.is_aiming,
             "aim_angle": self.aim_angle,
-            "is_bot": self.is_bot  # <-- Added this line
+            "is_bot": self.is_bot  
         }
 
 class Particle:
@@ -185,8 +180,8 @@ class Projectile:
         self.y = y
         self.angle = angle
         self.size = size
-        self.speed = 10
-        self.life = 60
+        self.speed = 10 + (size * 0.2)
+        self.life = int(40 + size)
 
     def update(self):
         self.x += math.cos(self.angle) * self.speed
@@ -270,7 +265,7 @@ class Room:
             if not self.game_started:
                 human_players = [p for p in self.players.values() if not p.is_bot]
                 
-                if len(human_players) >= 2:  # <-- Now requires 2+ real players
+                if len(human_players) >= 2:  
                     if self.lobby_timer_start is None:
                         self.lobby_timer_start = time.time()
                     
@@ -377,12 +372,13 @@ class Room:
 
                     if math.sqrt(p.x**2 + p.y**2) > self.ring_radius:
                         p.size -= 0.5
+                        p.target_size = p.size
                         if p.size <= 5:
                             p.alive = False
 
                     for part in self.particles[:]:
                         if math.hypot(p.x - part.x, p.y - part.y) < p.size + part.size:
-                            p.size += part.size * 0.1
+                            p.target_size += part.size * 0.1
                             self.particles.remove(part)
 
                     for proj in self.projectiles[:]:
@@ -403,6 +399,7 @@ class Room:
                             if math.hypot(p.x - other_p.x, p.y - other_p.y) < p.size:
                                 if p.size >= other_p.size * 1.25:
                                     other_p.alive = False
+                                    p.target_size += other_p.size * 0.5
                                     self.spawn_burst(other_p.x, other_p.y, other_p.size * 0.5, other_p.size)
 
                 for part in self.particles[:]:
@@ -444,7 +441,6 @@ class Room:
                 "lobby_time": remaining_time
             }
             
-            # Send particles only once per second (every 30 frames)
             if self.frame_count % 30 == 0:
                 state["particles"] = [[int(pt.x), int(pt.y), int(pt.size)] for pt in self.particles]
 
@@ -470,10 +466,8 @@ def find_or_create_room():
 async def handle_client(websocket):
     global _id_counter
 
-    # 1. BANDWIDTH GUARD: Reject client if monthly cap is reached
     if bandwidth_cap_reached:
         print("[Security] Connection rejected: Monthly bandwidth cap exceeded.")
-        # Send a rejection message before disconnecting
         try:
             await websocket.send("CAP_REACHED")
             await websocket.close(code=4000, reason="Monthly bandwidth cap reached.")
@@ -507,6 +501,7 @@ async def handle_client(websocket):
                             if p.size - cost >= START_SIZE:
                                 p.last_shoot_time = current_time 
                                 p.size -= cost
+                                p.target_size -= cost
                                 proj_size = (p.size + cost) / 4 
                                 spawn_dist = (p.size + proj_size) + 5
                                 px = p.x + math.cos(cmd['angle']) * spawn_dist
@@ -532,7 +527,6 @@ async def main():
     cloud_port = int(os.environ.get("PORT", PORT))
     print(f"WebSocket Server running on port {cloud_port}...")
     
-    # Start the background Firebase synchronization task
     asyncio.create_task(sync_bandwidth_loop())
     
     async with websockets.serve(handle_client, "0.0.0.0", cloud_port):
