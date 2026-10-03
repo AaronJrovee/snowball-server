@@ -38,6 +38,20 @@ try:
     bg_sprite = pygame.image.load("ice_bg.png").convert()
 except Exception:
         bg_sprite = None
+
+# --- SOUND ASSET LOADING ---
+pygame.mixer.init()
+try:
+    menu_music = "menu.ogg"
+    lobby_music = "lobby.ogg"
+    game_music = "game.ogg"
+    
+    shoot_sound = pygame.mixer.Sound("shoot.ogg")
+    capture_sound = pygame.mixer.Sound("capture.ogg")
+    collect_sound = pygame.mixer.Sound("collect.ogg")
+except Exception:
+    shoot_sound = capture_sound = collect_sound = None
+# ---------------------------
 # ---------------------------
 
 app_state = "MENU"
@@ -515,8 +529,11 @@ def draw_game(joystick_active, mx, my, can_shoot, space_held):
     current_server_players = {p['id']: p for p in gamestate.get('players', []) if p['alive']}
     
     # Remove disconnected or dead players from visual state
+    
     keys_to_remove = [pid for pid in visual_players if pid not in current_server_players]
     for pid in keys_to_remove:
+        if capture_sound:
+            capture_sound.play()
         del visual_players[pid]
 
     # Glide visual positions toward server positions
@@ -597,6 +614,8 @@ def draw_game(joystick_active, mx, my, can_shoot, space_held):
         for player in gamestate.get('players', []):
             if player['alive'] and math.hypot(player['x'] - p[0], player['y'] - p[1]) < player['size'] + p[2]:
                 eaten = True
+                if player['id'] == my_id and collect_sound:
+                    collect_sound.play()
                 break
         if not eaten:
             valid_particles.append(p)
@@ -774,8 +793,43 @@ async def main():
     last_shoot_time = 0
     pending_shoot_command = False
     
+    current_music_state = None
+    last_projectile_count = 0
+    
     while running:
         clock.tick(FPS)
+        
+        # --- MUSIC STATE MACHINE ---
+        if app_state == "MENU":
+            target_music = "MENU"
+        elif app_state in ["GAME", "OFFLINE_GAME"] and not gamestate.get('started'):
+            target_music = "LOBBY"
+        elif app_state in ["GAME", "OFFLINE_GAME"] and gamestate.get('started'):
+            target_music = "GAME"
+        else:
+            target_music = current_music_state
+            
+        if current_music_state != target_music:
+            current_music_state = target_music
+            try:
+                if target_music == "MENU":
+                    pygame.mixer.music.load(menu_music)
+                elif target_music == "LOBBY":
+                    pygame.mixer.music.load(lobby_music)
+                elif target_music == "GAME":
+                    pygame.mixer.music.load(game_music)
+                pygame.mixer.music.play(-1)
+            except Exception:
+                pass
+        # ---------------------------
+
+        # --- SHOOT SOUND TRACKER ---
+        current_projs = len(gamestate.get('projectiles', []))
+        if current_projs > last_projectile_count and shoot_sound:
+            shoot_sound.play()
+        last_projectile_count = current_projs
+        # ---------------------------
+
         mx, my = pygame.mouse.get_pos()
         now = pygame.time.get_ticks()
         keys = pygame.key.get_pressed()
