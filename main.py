@@ -18,7 +18,7 @@ else:
 
 pygame.init()
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
-pygame.display.set_caption("Snowball.io Clone")
+pygame.display.set_caption("Snowball.io")
 clock = pygame.time.Clock()
 
 font_large = pygame.font.SysFont("Arial", 40, bold=True)
@@ -45,6 +45,7 @@ server_status = "OK"
 client = None
 my_id = None
 gamestate = {}
+visual_players = {}  # <-- Add this to track smoothed positions
 winner_announcement = ""
 winner_display_start = 0
 
@@ -502,7 +503,7 @@ def draw_winner():
     screen.blit(sub_text, (WIDTH // 2 - sub_text.get_width() // 2, HEIGHT // 2 + 20))
 
 def draw_game(joystick_active, mx, my, can_shoot, space_held):
-    global use_textures
+    global use_textures, visual_players
 
     if not gamestate:
         screen.fill(BG_COLOR)
@@ -510,23 +511,51 @@ def draw_game(joystick_active, mx, my, can_shoot, space_held):
         screen.blit(text, (WIDTH // 2 - text.get_width() // 2, HEIGHT // 2))
         return
 
+    # --- LERP (SMOOTHING) LOGIC ---
+    current_server_players = {p['id']: p for p in gamestate.get('players', []) if p['alive']}
+    
+    # Remove disconnected or dead players from visual state
+    keys_to_remove = [pid for pid in visual_players if pid not in current_server_players]
+    for pid in keys_to_remove:
+        del visual_players[pid]
+
+    # Glide visual positions toward server positions
+    lerp_factor = 0.3  # 0.3 means moving 30% of the remaining distance per frame
+    for pid, sp in current_server_players.items():
+        if pid not in visual_players:
+            # Snap immediately if we just saw them
+            visual_players[pid] = {'x': sp['x'], 'y': sp['y'], 'angle': sp['angle'], 'size': sp['size']}
+        else:
+            vp = visual_players[pid]
+            vp['x'] += (sp['x'] - vp['x']) * lerp_factor
+            vp['y'] += (sp['y'] - vp['y']) * lerp_factor
+            
+            # Smooth angle rotation (accounts for mathematical wraparound)
+            diff = (sp['angle'] - vp['angle'] + math.pi) % (2 * math.pi) - math.pi
+            vp['angle'] += diff * lerp_factor
+            vp['size'] = sp['size']
+    # ------------------------------
+
+    # Determine camera target using SMOOTHED coordinates
     me = next((p for p in gamestate.get('players', []) if p['id'] == my_id), None)
     target_x, target_y = 0, 0
     target_size = START_SIZE
     is_spectating = False
     spectated_name = ""
     
-    if me and me['alive']:
-        target_x = me['x']
-        target_y = me['y']
-        target_size = me['size']
+    if me and me['alive'] and my_id in visual_players:
+        target_x = visual_players[my_id]['x']
+        target_y = visual_players[my_id]['y']
+        target_size = visual_players[my_id]['size']
     elif gamestate.get('started'):
         alive_players = [p for p in gamestate.get('players', []) if p['alive']]
         if alive_players:
             top_player = max(alive_players, key=lambda p: p['size'])
-            target_x = top_player['x']
-            target_y = top_player['y']
-            target_size = top_player['size']
+            if top_player['id'] in visual_players:
+                vp_top = visual_players[top_player['id']]
+                target_x = vp_top['x']
+                target_y = vp_top['y']
+                target_size = vp_top['size']
             is_spectating = True
             spectated_name = top_player.get('name', 'Unknown')
 
@@ -561,7 +590,7 @@ def draw_game(joystick_active, mx, my, can_shoot, space_held):
     center_screen = to_screen(0, 0)
     pygame.draw.circle(screen, ORANGE, center_screen, max(1, int(ring_r * zoom)), max(1, int(5 * zoom)))
 
-    # Render Snow Particles (With Immediate Eaten Glitch Fix)
+    # Render Snow Particles 
     valid_particles = []
     for p in gamestate.get('particles', []):
         eaten = False
@@ -591,12 +620,13 @@ def draw_game(joystick_active, mx, my, can_shoot, space_held):
         else:
             pygame.draw.circle(screen, (255, 255, 255), (sx, sy), scaled_p_size)
 
-    # Render Players (Rotation Removed)
+    # Render Players (Using smoothed visual data)
     for p in gamestate.get('players', []):
-        if not p['alive']: continue
+        if not p['alive'] or p['id'] not in visual_players: continue
 
-        sx, sy = to_screen(p['x'], p['y'])
-        scaled_size = max(1, int(p['size'] * zoom))
+        vp = visual_players[p['id']]
+        sx, sy = to_screen(vp['x'], vp['y'])
+        scaled_size = max(1, int(vp['size'] * zoom))
         
         if snow_sprite and use_textures:
             current_img = pygame.transform.scale(snow_sprite, (scaled_size * 2, scaled_size * 2))
@@ -613,16 +643,14 @@ def draw_game(joystick_active, mx, my, can_shoot, space_held):
             end_y = int(sy + math.sin(aim_angle) * ray_length)
             
             shared_ray_surf.fill((0, 0, 0, 0))
-            
-            # Width = diameter of projectile snowball
-            p_size = p.get('size', START_SIZE)
+            p_size = vp['size']
             proj_size = (p_size + (p_size / 8)) / 4
             ray_width = max(2, int((proj_size * 2) * zoom))
             
             pygame.draw.line(shared_ray_surf, (255, 255, 255, 80), (sx, sy), (end_x, end_y), ray_width)
             screen.blit(shared_ray_surf, (0, 0))
-        else:
-            angle = p['angle']
+        elif not (snow_sprite and use_textures):
+            angle = vp['angle']
             tip_x = sx + math.cos(angle) * (scaled_size + 25 * zoom)
             tip_y = sy + math.sin(angle) * (scaled_size + 25 * zoom)
             base_left_x = sx + math.cos(angle - 0.5) * (scaled_size + 15 * zoom)
