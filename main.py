@@ -72,10 +72,11 @@ menu_snowflakes = [[random.randint(0, WIDTH), random.randint(0, HEIGHT), random.
 # Joystick & UI Configuration
 
 # Joystick & UI Configuration
-JOY_CENTER = (WIDTH - 120, HEIGHT - 120)
+AIM_JOY_CENTER = (WIDTH - 120, HEIGHT - 120)
+MOVE_JOY_CENTER = (120, HEIGHT - 120)
 JOY_RADIUS = 70
 TOGGLE_BTN_RECT = pygame.Rect(WIDTH - 150, 15, 135, 35)
-use_textures = False 
+use_textures = False
 
 shared_ray_surf = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
 offline_engine = None
@@ -607,7 +608,7 @@ def draw_winner():
     screen.blit(w_text, (WIDTH // 2 - w_text.get_width() // 2, HEIGHT // 2 - 40))
     screen.blit(sub_text, (WIDTH // 2 - sub_text.get_width() // 2, HEIGHT // 2 + 20))
 
-def draw_game(joystick_active, mx, my, can_shoot, space_held):
+def draw_game(move_active, move_angle, move_pos, aim_active, aim_angle, aim_pos, can_shoot):
     global use_textures, visual_players
 
     if not gamestate:
@@ -850,29 +851,43 @@ def draw_game(joystick_active, mx, my, can_shoot, space_held):
     t_surf = font_small.render(btn_text, True, WHITE)
     screen.blit(t_surf, (TOGGLE_BTN_RECT.centerx - t_surf.get_width() // 2, TOGGLE_BTN_RECT.centery - t_surf.get_height() // 2))
 
-    if me and me['alive'] and gamestate.get('started') and can_shoot and not space_held:
+    if me and me['alive'] and gamestate.get('started'):
         KNOB_RADIUS = 25
         surf_width = (JOY_RADIUS + KNOB_RADIUS) * 2
-        j_surf = pygame.Surface((surf_width, surf_width), pygame.SRCALPHA)
         surf_center = surf_width // 2
+
+        # Draw Left Joystick (Movement) - No Crosshairs
+        move_surf = pygame.Surface((surf_width, surf_width), pygame.SRCALPHA)
+        pygame.draw.circle(move_surf, (0, 0, 0, 80), (surf_center, surf_center), JOY_RADIUS)
         
-        pygame.draw.circle(j_surf, (0, 0, 0, 80), (surf_center, surf_center), JOY_RADIUS)
-        
-        if joystick_active:
-            dist = math.hypot(mx - JOY_CENTER[0], my - JOY_CENTER[1])
-            angle = math.atan2(my - JOY_CENTER[1], mx - JOY_CENTER[0])
-            dist = min(dist, JOY_RADIUS)
-            knob_x = surf_center + math.cos(angle) * dist
-            knob_y = surf_center + math.sin(angle) * dist
+        if move_active:
+            dist = math.hypot(move_pos[0] - MOVE_JOY_CENTER[0], move_pos[1] - MOVE_JOY_CENTER[1])
+            dist = min(dist, JOY_RADIUS) # Clamps knob inside the circle
+            kx = surf_center + math.cos(move_angle) * dist
+            ky = surf_center + math.sin(move_angle) * dist
         else:
-            knob_x, knob_y = surf_center, surf_center
+            kx, ky = surf_center, surf_center
             
-        kx, ky = int(knob_x), int(knob_y)
-        pygame.draw.circle(j_surf, (255, 255, 255, 150), (kx, ky), KNOB_RADIUS)
-        pygame.draw.line(j_surf, (0, 0, 0, 150), (kx - 10, ky), (kx + 10, ky), 3)
-        pygame.draw.line(j_surf, (0, 0, 0, 150), (kx, ky - 10), (kx, ky + 10), 3)
-        
-        screen.blit(j_surf, (JOY_CENTER[0] - surf_center, JOY_CENTER[1] - surf_center))
+        pygame.draw.circle(move_surf, (255, 255, 255, 150), (int(kx), int(ky)), KNOB_RADIUS)
+        screen.blit(move_surf, (MOVE_JOY_CENTER[0] - surf_center, MOVE_JOY_CENTER[1] - surf_center))
+
+        # Draw Right Joystick (Aim/Shoot) - Original White w/ Crosshairs
+        if can_shoot:
+            aim_surf = pygame.Surface((surf_width, surf_width), pygame.SRCALPHA)
+            pygame.draw.circle(aim_surf, (0, 0, 0, 80), (surf_center, surf_center), JOY_RADIUS)
+            
+            if aim_active:
+                dist = math.hypot(aim_pos[0] - AIM_JOY_CENTER[0], aim_pos[1] - AIM_JOY_CENTER[1])
+                dist = min(dist, JOY_RADIUS) # Clamps knob inside the circle
+                akx = surf_center + math.cos(aim_angle) * dist
+                aky = surf_center + math.sin(aim_angle) * dist
+            else:
+                akx, aky = surf_center, surf_center
+                
+            pygame.draw.circle(aim_surf, (255, 255, 255, 150), (int(akx), int(aky)), KNOB_RADIUS)
+            pygame.draw.line(aim_surf, (0, 0, 0, 150), (int(akx) - 10, int(aky)), (int(akx) + 10, int(aky)), 3)
+            pygame.draw.line(aim_surf, (0, 0, 0, 150), (int(akx), int(aky) - 10), (int(akx), int(aky) + 10), 3)
+            screen.blit(aim_surf, (AIM_JOY_CENTER[0] - surf_center, AIM_JOY_CENTER[1] - surf_center))
 
 # ==============================================================================
 # MAIN LOOP
@@ -892,6 +907,8 @@ async def main():
     
     current_music_state = None
     last_projectile_count = 0
+    
+    active_touches = {}
     
     while running:
         clock.tick(FPS)
@@ -927,10 +944,7 @@ async def main():
         last_projectile_count = current_projs
         # ---------------------------
 
-        mx, my = pygame.mouse.get_pos()
         now = pygame.time.get_ticks()
-        keys = pygame.key.get_pressed()
-        space_held = keys[pygame.K_SPACE]
 
         can_shoot = False
         me = next((p for p in gamestate.get('players', []) if p['id'] == my_id), None)
@@ -942,6 +956,12 @@ async def main():
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
+                
+            # Track Multi-Touch events
+            if event.type == pygame.FINGERDOWN or event.type == pygame.FINGERMOTION:
+                active_touches[event.finger_id] = (event.x * WIDTH, event.y * HEIGHT)
+            elif event.type == pygame.FINGERUP:
+                active_touches.pop(event.finger_id, None)
 
             if app_state == "MENU":
                 if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
@@ -968,50 +988,32 @@ async def main():
                             if btn_ready.collidepoint(event.pos):
                                 asyncio.create_task(send({"command": "ready"}))
                                 continue
-                            
-                    if gamestate.get('started') and can_shoot:
-                        if space_held:
-                            space_aim_active = True
-                        elif math.hypot(event.pos[0] - JOY_CENTER[0], event.pos[1] - JOY_CENTER[1]) <= JOY_RADIUS:
-                            joystick_active = True
 
-                if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
-                    if not gamestate.get('started') and app_state == "GAME":
-                        human_players = [p for p in gamestate.get('players', []) if not p.get('is_bot', False)]
-                        if len(human_players) >= 2:
-                            asyncio.create_task(send({"command": "ready"}))
-                    elif can_shoot and pygame.mouse.get_pressed()[0]:
-                        space_aim_active = True
+        # Evaluate Active Touch/Mouse Inputs for Dual Joysticks
+        current_inputs = list(active_touches.values())
+        if pygame.mouse.get_pressed()[0]:
+            current_inputs.append(pygame.mouse.get_pos())
+            
+        move_active = False
+        aim_active = False
+        move_angle = last_angle
+        aim_angle = last_aim_angle
+        move_pos = (0, 0)
+        aim_pos = (0, 0)
 
-                if event.type == pygame.KEYUP and event.key == pygame.K_SPACE:
-                    if space_aim_active:
-                        space_aim_active = False
-                        aim_angle = math.atan2(my - HEIGHT // 2, mx - WIDTH // 2)
-                        if app_state == "GAME":
-                            asyncio.create_task(send({"command": "shoot", "angle": aim_angle}))
-                            asyncio.create_task(send({"command": "move", "is_aiming": False, "moving": False}))
-                        else:
-                            pending_shoot_command = True
-                        last_is_aiming = False
-                        last_shoot_time = now 
+        if gamestate.get('started') and me and me['alive']:
+            for tx, ty in current_inputs:
+                # Left Joystick (Triggered anywhere on the left half of screen)
+                if tx < WIDTH // 2:
+                    move_active = True
+                    move_pos = (tx, ty)
+                    move_angle = math.atan2(ty - MOVE_JOY_CENTER[1], tx - MOVE_JOY_CENTER[0])
                 
-                if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
-                    if joystick_active or space_aim_active:
-                        if joystick_active:
-                            aim_angle = math.atan2(my - JOY_CENTER[1], mx - JOY_CENTER[0])
-                        else:
-                            aim_angle = math.atan2(my - HEIGHT // 2, mx - WIDTH // 2)
-                            
-                        joystick_active = False
-                        space_aim_active = False
-                        
-                        if app_state == "GAME":
-                            asyncio.create_task(send({"command": "shoot", "angle": aim_angle}))
-                            asyncio.create_task(send({"command": "move", "is_aiming": False, "moving": False}))
-                        else:
-                            pending_shoot_command = True
-                        last_is_aiming = False
-                        last_shoot_time = now 
+                # Right Joystick (Triggered anywhere on the right half of screen)
+                elif can_shoot and tx >= WIDTH // 2:
+                    aim_active = True
+                    aim_pos = (tx, ty)
+                    aim_angle = math.atan2(ty - AIM_JOY_CENTER[1], tx - AIM_JOY_CENTER[0])
 
         if app_state == "MENU":
             draw_menu()
@@ -1020,50 +1022,46 @@ async def main():
             draw_connecting()
             
         elif app_state == "WINNER":
-            draw_game(False, mx, my, False, False)
+            draw_game(False, 0, (0, 0), False, 0, (0, 0), False)
             draw_winner()
             if now - winner_display_start > 3000:
                 app_state = "MENU"
                 gamestate = {}
                 
         elif app_state == "OFFLINE_GAME" or app_state == "GAME":
-            is_aiming_now = False
-            moving = False
-            aim_angle = last_aim_angle
-            angle = last_angle
-            
-            if gamestate.get('started'):
-                if (joystick_active or space_aim_active) and can_shoot:
-                    is_aiming_now = True
-                    moving = False
-                    if joystick_active:
-                        aim_angle = math.atan2(my - JOY_CENTER[1], mx - JOY_CENTER[0])
-                    else:
-                        aim_angle = math.atan2(my - HEIGHT // 2, mx - WIDTH // 2)
-                        
-                    if app_state == "GAME" and (abs(aim_angle - last_aim_angle) > 0.01 or not last_is_aiming):
-                        asyncio.create_task(send({"command": "move", "is_aiming": True, "aim_angle": aim_angle, "moving": False}))
-                        
-                    last_aim_angle = aim_angle
-                    last_is_aiming = True
+            # Detect aim release to trigger shot
+            if last_is_aiming and not aim_active:
+                if app_state == "GAME":
+                    asyncio.create_task(send({"command": "shoot", "angle": last_aim_angle}))
+                    asyncio.create_task(send({"command": "move", "is_aiming": False, "moving": move_active, "angle": move_angle}))
                 else:
-                    if joystick_active or space_aim_active: 
-                        joystick_active = False
-                        space_aim_active = False
-                        
-                    center_x, center_y = WIDTH // 2, HEIGHT // 2
-                    angle = math.atan2(my - center_y, mx - center_x)
-                    moving = pygame.mouse.get_pressed()[0]
+                    pending_shoot_command = True
+                last_shoot_time = now
+            
+            # Send Network Updates only if state changes
+            if app_state == "GAME":
+                state_changed = False
+                if move_active != last_moving or (move_active and abs(move_angle - last_angle) > 0.01):
+                    state_changed = True
+                if aim_active != last_is_aiming or (aim_active and abs(aim_angle - last_aim_angle) > 0.01):
+                    state_changed = True
                     
-                    if app_state == "GAME" and (moving != last_moving or abs(angle - last_angle) > 0.01 or last_is_aiming):
-                        asyncio.create_task(send({"command": "move", "angle": angle, "moving": moving, "is_aiming": False}))
-                        
-                    last_angle = angle
-                    last_moving = moving
-                    last_is_aiming = False
+                if state_changed:
+                    asyncio.create_task(send({
+                        "command": "move", 
+                        "angle": move_angle, 
+                        "moving": move_active, 
+                        "is_aiming": aim_active,
+                        "aim_angle": aim_angle
+                    }))
+
+            last_angle = move_angle
+            last_moving = move_active
+            last_aim_angle = aim_angle
+            last_is_aiming = aim_active
 
             if app_state == "OFFLINE_GAME":
-                gamestate = offline_engine.update(moving, angle, is_aiming_now, aim_angle, pending_shoot_command)
+                gamestate = offline_engine.update(move_active, move_angle, aim_active, aim_angle, pending_shoot_command)
                 pending_shoot_command = False
                 
                 alive_players = [p for p in gamestate['players'] if p['alive']]
@@ -1073,7 +1071,7 @@ async def main():
                     winner_display_start = pygame.time.get_ticks()
                     app_state = "WINNER"
 
-            draw_game(joystick_active, mx, my, can_shoot, space_held)
+            draw_game(move_active, move_angle, move_pos, aim_active, aim_angle, aim_pos, can_shoot)
 
         pygame.display.flip()
         await asyncio.sleep(0)
