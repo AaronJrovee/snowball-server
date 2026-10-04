@@ -680,13 +680,16 @@ def draw_game(move_active, move_angle, move_pos, aim_active, aim_angle, aim_pos,
 
     # --- MOVING BACKGROUND LOGIC CONSOLIDATED ---
     if bg_sprite and use_textures:
-        bg_w, bg_h = bg_sprite.get_width(), bg_sprite.get_height()
-        offset_x = -int(target_x * zoom) % bg_w
-        offset_y = -int(target_y * zoom) % bg_h
+        scaled_bg_w = max(1, int(bg_sprite.get_width() * zoom))
+        scaled_bg_h = max(1, int(bg_sprite.get_height() * zoom))
+        scaled_bg = pygame.transform.scale(bg_sprite, (scaled_bg_w, scaled_bg_h))
         
-        for x in range(offset_x - bg_w, WIDTH, bg_w):
-            for y in range(offset_y - bg_h, HEIGHT, bg_h):
-                screen.blit(bg_sprite, (x, y))
+        offset_x = -int(target_x * zoom) % scaled_bg_w
+        offset_y = -int(target_y * zoom) % scaled_bg_h
+        
+        for x in range(offset_x - scaled_bg_w, WIDTH, scaled_bg_w):
+            for y in range(offset_y - scaled_bg_h, HEIGHT, scaled_bg_h):
+                screen.blit(scaled_bg, (x, y))
                 
         filter_surf = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
         filter_surf.fill((BG_COLOR[0], BG_COLOR[1], BG_COLOR[2], 120))
