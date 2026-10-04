@@ -104,7 +104,7 @@ class OfflineEngine:
         # Human Player
         self.players.append({
             "id": 0, "x": 0, "y": 0, "size": START_SIZE, "target_size": START_SIZE, "angle": 0, "alive": True,
-            "name": get_name(0), "is_aiming": False, "aim_angle": 0, "kb_dx": 0, "kb_dy": 0,
+            "name": get_name(0), "is_aiming": False, "aim_angle": 0, "kb_dx": 0, "kb_dy": 0, "vx": 0, "vy": 0,
             "last_shoot": 0, "is_moving": False, "is_bot": False, "stun_timer": 0
         })
         
@@ -115,7 +115,7 @@ class OfflineEngine:
             self.players.append({
                 "id": i, "x": r * math.cos(a), "y": r * math.sin(a), "size": START_SIZE, "target_size": START_SIZE,
                 "angle": 0, "alive": True, "name": get_name(i) + " [BOT]", "is_aiming": False,
-                "aim_angle": 0, "kb_dx": 0, "kb_dy": 0, "last_shoot": 0, "is_moving": True,
+                "aim_angle": 0, "kb_dx": 0, "kb_dy": 0, "vx": 0, "vy": 0, "last_shoot": 0, "is_moving": True,
                 "is_bot": True, "stun_timer": 0
             })
 
@@ -203,16 +203,27 @@ class OfflineEngine:
             p["kb_dy"] *= 0.85
 
             active_vel = 5 
+            tx = 0
+            ty = 0
 
             if p["stun_timer"] > 0:
                 p["stun_timer"] -= 1
             else:
                 if p["is_aiming"]:
-                    p["x"] += math.cos(p["aim_angle"] + math.pi) * (active_vel * 0.5)
-                    p["y"] += math.sin(p["aim_angle"] + math.pi) * (active_vel * 0.5)
+                    tx = math.cos(p["aim_angle"] + math.pi) * (active_vel * 0.5)
+                    ty = math.sin(p["aim_angle"] + math.pi) * (active_vel * 0.5)
                 elif p["is_moving"]:
-                    p["x"] += math.cos(p["angle"]) * active_vel
-                    p["y"] += math.sin(p["angle"]) * active_vel
+                    tx = math.cos(p["angle"]) * active_vel
+                    ty = math.sin(p["angle"]) * active_vel
+            
+            # Acceleration scales with size: Bigger = takes longer to reach max speed/stop
+            accel = max(0.02, START_SIZE / (p["size"] * 2.5))
+            
+            p["vx"] += (tx - p["vx"]) * accel
+            p["vy"] += (ty - p["vy"]) * accel
+            
+            p["x"] += p["vx"]
+            p["y"] += p["vy"]
 
         self.ring = max(0, self.ring - RING_SHRINK_RATE)
 
@@ -541,7 +552,7 @@ def draw_game(joystick_active, mx, my, can_shoot, space_held):
     for pid, sp in current_server_players.items():
         if pid not in visual_players:
             # Snap immediately if we just saw them
-            visual_players[pid] = {'x': sp['x'], 'y': sp['y'], 'angle': sp['angle'], 'size': sp['size']}
+            visual_players[pid] = {'x': sp['x'], 'y': sp['y'], 'angle': sp['angle'], 'size': sp['size'], 'aim_angle': sp.get('aim_angle', 0)}
         else:
             vp = visual_players[pid]
             vp['x'] += (sp['x'] - vp['x']) * lerp_factor
@@ -550,6 +561,11 @@ def draw_game(joystick_active, mx, my, can_shoot, space_held):
             # Smooth angle rotation (accounts for mathematical wraparound)
             diff = (sp['angle'] - vp['angle'] + math.pi) % (2 * math.pi) - math.pi
             vp['angle'] += diff * lerp_factor
+            
+            # Smooth aim angle rotation
+            diff_aim = (sp.get('aim_angle', 0) - vp.get('aim_angle', 0) + math.pi) % (2 * math.pi) - math.pi
+            vp['aim_angle'] += diff_aim * lerp_factor
+            
             vp['size'] = sp['size']
     # ------------------------------
 
@@ -657,7 +673,7 @@ def draw_game(joystick_active, mx, my, can_shoot, space_held):
             pygame.draw.circle(screen, color, (sx, sy), scaled_size)
 
         if p.get('is_aiming'):
-            aim_angle = p.get('aim_angle', 0)
+            aim_angle = vp.get('aim_angle', p.get('aim_angle', 0))
             ray_length = 2000
             end_x = int(sx + math.cos(aim_angle) * ray_length)
             end_y = int(sy + math.sin(aim_angle) * ray_length)
@@ -945,7 +961,7 @@ async def main():
                     else:
                         aim_angle = math.atan2(my - HEIGHT // 2, mx - WIDTH // 2)
                         
-                    if app_state == "GAME" and (abs(aim_angle - last_aim_angle) > 0.05 or not last_is_aiming):
+                    if app_state == "GAME" and (abs(aim_angle - last_aim_angle) > 0.01 or not last_is_aiming):
                         asyncio.create_task(send({"command": "move", "is_aiming": True, "aim_angle": aim_angle, "moving": False}))
                         
                     last_aim_angle = aim_angle
@@ -959,7 +975,7 @@ async def main():
                     angle = math.atan2(my - center_y, mx - center_x)
                     moving = pygame.mouse.get_pressed()[0]
                     
-                    if app_state == "GAME" and (moving != last_moving or abs(angle - last_angle) > 0.05 or last_is_aiming):
+                    if app_state == "GAME" and (moving != last_moving or abs(angle - last_angle) > 0.01 or last_is_aiming):
                         asyncio.create_task(send({"command": "move", "angle": angle, "moving": moving, "is_aiming": False}))
                         
                     last_angle = angle

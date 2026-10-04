@@ -109,7 +109,9 @@ class Player:
         self.aim_angle = 0
         self.kb_dx = 0
         self.kb_dy = 0
-        self.last_shoot_time = 0 
+        self.vx = 0
+        self.vy = 0
+        self.last_shoot_time = 0
         
     def set_movement(self, move_data):
         self.is_moving = move_data.get('moving', False)
@@ -130,20 +132,27 @@ class Player:
         self.kb_dy *= 0.85
 
         active_vel = self.vel 
+        tx = 0
+        ty = 0
 
         if self.stun_timer > 0:
             self.stun_timer -= 1
         else:
             if self.is_aiming:
-                dx = math.cos(self.aim_angle + math.pi) * (active_vel * 0.5)
-                dy = math.sin(self.aim_angle + math.pi) * (active_vel * 0.5)
-                self.x += dx
-                self.y += dy
+                tx = math.cos(self.aim_angle + math.pi) * (active_vel * 0.5)
+                ty = math.sin(self.aim_angle + math.pi) * (active_vel * 0.5)
             elif self.is_moving:
-                dx = math.cos(self.angle) * active_vel
-                dy = math.sin(self.angle) * active_vel
-                self.x += dx
-                self.y += dy
+                tx = math.cos(self.angle) * active_vel
+                ty = math.sin(self.angle) * active_vel
+                
+        # Acceleration scales with size: Bigger = takes longer to reach max speed/stop
+        accel = max(0.02, START_SIZE / (self.size * 2.5))
+        
+        self.vx += (tx - self.vx) * accel
+        self.vy += (ty - self.vy) * accel
+        
+        self.x += self.vx
+        self.y += self.vy
                 
         # Smooth scaling
         if self.size < self.target_size:
