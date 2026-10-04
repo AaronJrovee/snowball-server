@@ -65,6 +65,12 @@ winner_display_start = 0
 
 msg_queue = [] 
 
+# Menu Animation Variables
+menu_snowball = {"x": -100, "y": 50, "angle": 0, "size": 60, "vx": 4, "vy": 1.5}
+menu_snowflakes = [[random.randint(0, WIDTH), random.randint(0, HEIGHT), random.uniform(1, 4), random.uniform(1, 3)] for _ in range(100)]
+
+# Joystick & UI Configuration
+
 # Joystick & UI Configuration
 JOY_CENTER = (WIDTH - 120, HEIGHT - 120)
 JOY_RADIUS = 70
@@ -484,28 +490,102 @@ async def receive_data():
             pass
 
 def draw_menu():
-    screen.fill(BG_COLOR)
-    title = font_large.render("Snowball.io", True, BLACK)
-    screen.blit(title, (WIDTH // 2 - title.get_width() // 2, HEIGHT // 3))
+    # 1. Sky background
+    screen.fill((135, 206, 235)) 
+
+    # 2. Update and draw menu snowflakes
+    for flake in menu_snowflakes:
+        flake[1] += flake[3]  # Move down
+        flake[0] += math.sin(flake[1] * 0.05) * 0.5  # Sway
+        if flake[1] > HEIGHT:
+            flake[1] = random.randint(-50, -10)
+            flake[0] = random.randint(0, WIDTH)
+        pygame.draw.circle(screen, WHITE, (int(flake[0]), int(flake[1])), int(flake[2]))
+
+    # 3. Draw a snow-covered hill
+    hill_start_y = HEIGHT // 3
+    hill_end_y = HEIGHT
+    pygame.draw.polygon(screen, (240, 250, 255), [(0, hill_start_y), (WIDTH, hill_end_y), (0, HEIGHT)])
+
+    # 4. Update and draw rolling snowball locked to the hill slope
+    menu_snowball["x"] += menu_snowball["vx"]
+    menu_snowball["angle"] += 0.05
+    menu_snowball["size"] += 0.05  # Grows as it rolls down
+    
+    # Calculate exact Y on the hill slope
+    slope = (hill_end_y - hill_start_y) / WIDTH
+    # The 0.8 modifier sinks it slightly into the snow so it doesn't float
+    menu_snowball["y"] = hill_start_y + (menu_snowball["x"] * slope) - (menu_snowball["size"] * 0.8) 
+
+    if menu_snowball["x"] > WIDTH + 100:
+        menu_snowball["x"] = -100
+        menu_snowball["size"] = 20 # Start small at the top of the hill
+
+    sb_x, sb_y = int(menu_snowball["x"]), int(menu_snowball["y"])
+    sb_size = int(menu_snowball["size"])
+    
+    if snow_sprite:
+        sb_img = pygame.transform.scale(snow_sprite, (sb_size * 2, sb_size * 2))
+        sb_img = pygame.transform.rotate(sb_img, math.degrees(-menu_snowball["angle"]))
+        screen.blit(sb_img, sb_img.get_rect(center=(sb_x, sb_y)))
+    else:
+        pygame.draw.circle(screen, WHITE, (sb_x, sb_y), sb_size)
+
+    # 5. Translucent Layer (separates UI from bg)
+    overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+    overlay.fill((0, 0, 0, 100))
+    screen.blit(overlay, (0, 0))
+
+    # 6. Wintery white bubble letters (Title) with a more subtle pulse
+    title_pulse = math.sin(pygame.time.get_ticks() * 0.0015) 
+    title_size = int(75 + (2 * title_pulse)) # Reduced multiplier for subtlety
+    title_font = pygame.font.SysFont("Arial", title_size, bold=True)
+    title_text = "SNOWBALL.IO"
+    
+    # Draw thick light blue outline
+    outline_color = (150, 200, 255)
+    t_x, t_y = WIDTH // 2 - title_font.size(title_text)[0] // 2, HEIGHT // 4
+    for dx, dy in [(-4,-4), (4,-4), (-4,4), (4,4), (-5,0), (5,0), (0,-5), (0,5)]:
+        screen.blit(title_font.render(title_text, True, outline_color), (t_x + dx, t_y + dy))
+    
+    # Draw core text
+    screen.blit(title_font.render(title_text, True, WHITE), (t_x, t_y))
 
     play_btn = None
     offline_btn = None
+    btn_y_offset = HEIGHT // 2 + 30
 
+    # Calculate perfectly proportional pulse scaling using a unified multiplier
+    btn_scale = 1.0 + (0.04 * math.sin(pygame.time.get_ticks() * 0.002))
+    p_width = int(280 * btn_scale)
+    p_height = int(60 * btn_scale)
+    
+    # Dynamically scale the font perfectly in sync with the button dimensions
+    active_btn_font = pygame.font.SysFont("Arial", int(40 * btn_scale), bold=True)
+
+    # 7. Rounded UI Buttons
     if server_status == "OK":
-        play_btn = pygame.Rect(WIDTH // 2 - 140, HEIGHT // 2, 280, 60)
-        pygame.draw.rect(screen, (50, 150, 255), play_btn, border_radius=10)
-        p_text = font_large.render("PLAY ONLINE", True, WHITE)
+        play_btn = pygame.Rect(0, 0, p_width, p_height)
+        play_btn.center = (WIDTH // 2, btn_y_offset)
+        pygame.draw.rect(screen, (50, 150, 255), play_btn, border_radius=30)
+        pygame.draw.rect(screen, WHITE, play_btn, width=3, border_radius=30)
+        p_text = active_btn_font.render("PLAY ONLINE", True, WHITE)
         screen.blit(p_text, (play_btn.centerx - p_text.get_width() // 2, play_btn.centery - p_text.get_height() // 2))
         
-        offline_btn = pygame.Rect(WIDTH // 2 - 140, HEIGHT // 2 + 80, 280, 60)
+        offline_btn = pygame.Rect(0, 0, 280, 60)
+        offline_btn.center = (WIDTH // 2, btn_y_offset + 80)
+        o_text = font.render("OFFLINE MODE", True, WHITE) # standard font
     else:
-        offline_btn = pygame.Rect(WIDTH // 2 - 140, HEIGHT // 2, 280, 60)
+        # If offline is the main choice, make it pulse instead
+        offline_btn = pygame.Rect(0, 0, p_width, p_height) 
+        offline_btn.center = (WIDTH // 2, btn_y_offset)
         msg = "Server Unreachable" if server_status == "UNREACHABLE" else "Monthly Bandwidth Capped"
-        err_text = font_small.render(msg, True, RED)
-        screen.blit(err_text, (WIDTH // 2 - err_text.get_width() // 2, HEIGHT // 2 - 35))
+        err_text = font_small.render(msg, True, (255, 100, 100))
+        screen.blit(err_text, (WIDTH // 2 - err_text.get_width() // 2, btn_y_offset - 45))
+        o_text = active_btn_font.render("OFFLINE MODE", True, WHITE) # pulsing font
 
-    pygame.draw.rect(screen, (100, 100, 100), offline_btn, border_radius=10)
-    o_text = font.render("OFFLINE MODE", True, WHITE)
+    pygame.draw.rect(screen, (120, 130, 140), offline_btn, border_radius=30)
+    pygame.draw.rect(screen, WHITE, offline_btn, width=3, border_radius=30)
     screen.blit(o_text, (offline_btn.centerx - o_text.get_width() // 2, offline_btn.centery - o_text.get_height() // 2))
 
     return play_btn, offline_btn
