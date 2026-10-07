@@ -74,14 +74,15 @@ menu_snowflakes = [[random.randint(0, WIDTH), random.randint(0, HEIGHT), random.
 AIM_JOY_CENTER = (WIDTH - 120, HEIGHT - 120)
 MOVE_JOY_CENTER = (120, HEIGHT - 120)
 JOY_RADIUS = 70
-TOGGLE_BTN_RECT = pygame.Rect(WIDTH - 150, 15, 135, 35)
-BACK_BTN_RECT = pygame.Rect(15, 15, 80, 35)
+# Shifted toggle button left to make room for the back button
+TOGGLE_BTN_RECT = pygame.Rect(WIDTH - 225, 15, 135, 35)
+# Smaller back button placed in the true top-right corner
+BACK_BTN_RECT = pygame.Rect(WIDTH - 80, 15, 65, 30)
 
 PU_SHIELD_RECT = pygame.Rect(WIDTH - 240, HEIGHT - 220, 50, 50)
 PU_SHOOT_RECT = pygame.Rect(WIDTH - 180, HEIGHT - 220, 50, 50)
 PU_SPEED_RECT = pygame.Rect(WIDTH - 120, HEIGHT - 220, 50, 50)
 use_textures = False
-
 shared_ray_surf = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
 offline_engine = None
 
@@ -956,7 +957,7 @@ def draw_game(move_active, move_angle, move_pos, aim_active, aim_angle, aim_pos,
 # MAIN LOOP
 # ==============================================================================
 async def main():
-    global app_state, gamestate, my_id, offline_engine, winner_announcement, winner_display_start, use_textures
+    global app_state, gamestate, my_id, offline_engine, winner_announcement, winner_display_start, use_textures, client
     running = True
     last_angle = 0
     last_moving = False
@@ -972,6 +973,8 @@ async def main():
     last_projectile_count = 0
     
     active_touches = {}
+    mouse_active = False
+    mouse_start = (0, 0)
     
     while running:
         clock.tick(FPS)
@@ -1020,42 +1023,71 @@ async def main():
             if event.type == pygame.QUIT:
                 running = False
                 
-            # Track Multi-Touch events
-            if event.type == pygame.FINGERDOWN or event.type == pygame.FINGERMOTION:
-                active_touches[event.finger_id] = (event.x * WIDTH, event.y * HEIGHT)
+            # Track Multi-Touch events (Start vs Current Position)
+            if event.type == pygame.FINGERDOWN:
+                pos = (event.x * WIDTH, event.y * HEIGHT)
+                active_touches[event.finger_id] = {"start": pos, "current": pos}
+            elif event.type == pygame.FINGERMOTION:
+                if event.finger_id in active_touches:
+                    active_touches[event.finger_id]["current"] = (event.x * WIDTH, event.y * HEIGHT)
             elif event.type == pygame.FINGERUP:
                 active_touches.pop(event.finger_id, None)
 
-            if app_state == "MENU":
-                if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            # Unified UI Clicks (Works for both PC Mouse and Mobile Touch)
+            ui_click_pos = None
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                ui_click_pos = event.pos
+                mouse_active = True
+                mouse_start = event.pos
+            elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+                mouse_active = False
+            elif event.type == pygame.FINGERDOWN:
+                ui_click_pos = (event.x * WIDTH, event.y * HEIGHT)
+
+            if ui_click_pos:
+                if app_state == "MENU":
                     play_rect, offline_rect = draw_menu()
-                    if play_rect and play_rect.collidepoint(event.pos):
+                    if play_rect and play_rect.collidepoint(ui_click_pos):
                         app_state = "CONNECTING"
                         asyncio.create_task(connect_to_server())
-                    elif offline_rect and offline_rect.collidepoint(event.pos):
+                    elif offline_rect and offline_rect.collidepoint(ui_click_pos):
                         app_state = "OFFLINE_GAME"
                         offline_engine = OfflineEngine()
                         my_id = 0
 
-            elif app_state in ["GAME", "OFFLINE_GAME"]:
-                if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                    # Check Toggle Button Click First
-                    if TOGGLE_BTN_RECT.collidepoint(event.pos):
+                elif app_state in ["GAME", "OFFLINE_GAME"]:
+                    if TOGGLE_BTN_RECT.collidepoint(ui_click_pos):
                         use_textures = not use_textures
-                        continue
-
-                    if not gamestate.get('started') and app_state == "GAME":
+                    
+                    elif (app_state == "OFFLINE_GAME" or not gamestate.get('started')) and BACK_BTN_RECT.collidepoint(ui_click_pos):
+                        app_state = "MENU"
+                        gamestate = {}
+                        if client:
+                            try:
+                                if sys.platform == "emscripten":
+                                    window.eval("if(window.ws_client) window.ws_client.close();")
+                                else:
+                                    asyncio.create_task(client.close())
+                            except: pass
+                            client = None
+                    
+                    elif not gamestate.get('started') and app_state == "GAME":
                         human_players = [p for p in gamestate.get('players', []) if not p.get('is_bot', False)]
                         if len(human_players) >= 2:
                             btn_ready = pygame.Rect(WIDTH // 2 - 110, HEIGHT // 2 - 30, 220, 60)
-                            if btn_ready.collidepoint(event.pos):
+                            if btn_ready.collidepoint(ui_click_pos):
                                 asyncio.create_task(send({"command": "ready"}))
-                                continue
+                                
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
+                if not gamestate.get('started') and app_state == "GAME":
+                    human_players = [p for p in gamestate.get('players', []) if not p.get('is_bot', False)]
+                    if len(human_players) >= 2:
+                        asyncio.create_task(send({"command": "ready"}))
 
         # Evaluate Active Touch/Mouse Inputs for Dual Joysticks
         current_inputs = list(active_touches.values())
-        if pygame.mouse.get_pressed()[0]:
-            current_inputs.append(pygame.mouse.get_pos())
+        if mouse_active:
+            current_inputs.append({"start": mouse_start, "current": pygame.mouse.get_pos()})
             
         move_active = False
         aim_active = False
@@ -1065,49 +1097,40 @@ async def main():
         aim_pos = (0, 0)
         pending_pu_command = None
 
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT: running = False
-            if event.type == pygame.FINGERDOWN or event.type == pygame.FINGERMOTION:
-                active_touches[event.finger_id] = (event.x * WIDTH, event.y * HEIGHT)
-            elif event.type == pygame.FINGERUP:
-                active_touches.pop(event.finger_id, None)
-
-            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                if (app_state == "OFFLINE_GAME" or (app_state == "GAME" and not gamestate.get('started'))) and BACK_BTN_RECT.collidepoint(event.pos):
-                    app_state = "MENU"
-                    gamestate = {}
-                    if client:
-                        asyncio.create_task(client.close())
-                        client = None
-                    continue
-
         if gamestate.get('started') and me and me['alive']:
-            for tx, ty in current_inputs:
-                # Left Joystick (Triggered anywhere on the left half of screen)
-                if tx < WIDTH // 2:
-                    move_active = True
-                    move_pos = (tx, ty)
-                    move_angle = math.atan2(ty - MOVE_JOY_CENTER[1], tx - MOVE_JOY_CENTER[0])
-                
-                # Right Joystick (Triggered anywhere on the right half of screen)
-                elif can_shoot and tx >= WIDTH // 2:
-                    aim_active = True
-                    aim_pos = (tx, ty)
-                    aim_angle = math.atan2(ty - AIM_JOY_CENTER[1], tx - AIM_JOY_CENTER[0])
-                    
+            for touch in current_inputs:
+                sx, sy = touch["start"]
+                cx, cy = touch["current"]
+
+                # 1. Check Powerups (Using start pos to ensure it was clicked directly)
                 if me and me['size'] >= 50:
-                    if me.get('pu_shield') and PU_SHIELD_RECT.collidepoint(tx, ty):
+                    if me.get('pu_shield') and PU_SHIELD_RECT.collidepoint(sx, sy):
                         if app_state == "GAME": asyncio.create_task(send({"command": "use_pu", "pu": "shield"}))
                         pending_pu_command = "shield"
                         me['pu_shield'] = 0
-                    if me.get('pu_shoot') and PU_SHOOT_RECT.collidepoint(tx, ty):
+                        continue
+                    if me.get('pu_shoot') and PU_SHOOT_RECT.collidepoint(sx, sy):
                         if app_state == "GAME": asyncio.create_task(send({"command": "use_pu", "pu": "shoot"}))
                         pending_pu_command = "shoot"
                         me['pu_shoot'] = 0
-                    if me.get('pu_speed') and PU_SPEED_RECT.collidepoint(tx, ty):
+                        continue
+                    if me.get('pu_speed') and PU_SPEED_RECT.collidepoint(sx, sy):
                         if app_state == "GAME": asyncio.create_task(send({"command": "use_pu", "pu": "speed"}))
                         pending_pu_command = "speed"
                         me['pu_speed'] = 0
+                        continue
+
+                # 2. Left Joystick (Must originate near the joystick center)
+                if math.hypot(sx - MOVE_JOY_CENTER[0], sy - MOVE_JOY_CENTER[1]) <= JOY_RADIUS * 2.5:
+                    move_active = True
+                    move_pos = (cx, cy)
+                    move_angle = math.atan2(cy - MOVE_JOY_CENTER[1], cx - MOVE_JOY_CENTER[0])
+                
+                # 3. Right Joystick (Must originate near the joystick center)
+                elif can_shoot and math.hypot(sx - AIM_JOY_CENTER[0], sy - AIM_JOY_CENTER[1]) <= JOY_RADIUS * 2.5:
+                    aim_active = True
+                    aim_pos = (cx, cy)
+                    aim_angle = math.atan2(cy - AIM_JOY_CENTER[1], cx - AIM_JOY_CENTER[0])
 
         if app_state == "MENU":
             draw_menu()
