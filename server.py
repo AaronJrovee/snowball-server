@@ -111,7 +111,14 @@ class Player:
         self.kb_dy = 0
         self.vx = 0
         self.vy = 0
-        self.last_shoot_time = 0
+        self.last_shoot_time = 0 
+        
+        self.pu_shield = 1
+        self.pu_shoot = 1
+        self.pu_speed = 1
+        self.shield_time = 0
+        self.shoot_time = 0
+        self.speed_time = 0
         
     def set_movement(self, move_data):
         self.is_moving = move_data.get('moving', False)
@@ -123,15 +130,18 @@ class Player:
             self.aim_angle = move_data['aim_angle']
 
     def update_position(self):
-        if not self.alive:
-            return
+        if not self.alive: return
+        
+        if self.shield_time > 0: self.shield_time -= 1
+        if self.shoot_time > 0: self.shoot_time -= 1
+        if self.speed_time > 0: self.speed_time -= 1
 
         self.x += self.kb_dx
         self.y += self.kb_dy
         self.kb_dx *= 0.85 
         self.kb_dy *= 0.85
 
-        active_vel = self.vel 
+        active_vel = 10 if self.speed_time > 0 else 5
         tx = 0
         ty = 0
 
@@ -172,7 +182,14 @@ class Player:
             "name": self.name,
             "is_aiming": self.is_aiming,
             "aim_angle": self.aim_angle,
-            "is_bot": self.is_bot  
+            "is_bot": self.is_bot,
+            "pu_shield": self.pu_shield,
+            "pu_shoot": self.pu_shoot,
+            "pu_speed": self.pu_speed,
+            "shield_time": self.shield_time,
+            "shoot_time": self.shoot_time,
+            "speed_time": self.speed_time,
+            "stun_timer": self.stun_timer
         }
 
 class Particle:
@@ -302,6 +319,8 @@ class Room:
                 else:
                     self.lobby_timer_start = None
                     remaining_time = self.lobby_duration
+                    for hp in human_players:
+                        hp.ready = False
 
             if self.game_started:
                 for p in self.players.values():
@@ -380,7 +399,7 @@ class Room:
                     if not p.alive: continue
 
                     if math.sqrt(p.x**2 + p.y**2) > self.ring_radius:
-                        p.size -= 0.5
+                        p.size -= 0.05
                         p.target_size = p.size
                         if p.size <= 5:
                             p.alive = False
@@ -392,21 +411,30 @@ class Room:
 
                     for proj in self.projectiles[:]:
                         if proj.owner_id != pid and proj.life > 0:
-                            if math.hypot(p.x - proj.x, p.y - proj.y) < p.size + proj.size:
+                            if math.hypot(p.x - proj.x, p.y - proj.y) < p.size + proj.size + (15 if p.shield_time > 0 else 0):
                                 proj.life = 0 
+                                if p.shield_time > 0: continue
                                 if proj.size > p.size:
                                     p.alive = False
                                     self.spawn_burst(p.x, p.y, p.size, p.size)
                                 else:
-                                    size_ratio = max(0.1, proj.size / p.size)
-                                    p.stun_timer = int(proj.size * STUN_MULTIPLIER * size_ratio)
-                                    p.kb_dx = math.cos(proj.angle) * (proj.size * 6 * size_ratio)
-                                    p.kb_dy = math.sin(proj.angle) * (proj.size * 6 * size_ratio)
+                                    ratio = proj.size / p.size
+                                    p.stun_timer = min(120, int(ratio * 215))
+                                    p.kb_dx = math.cos(proj.angle) * (proj.size * 6 * max(0.1, ratio))
+                                    p.kb_dy = math.sin(proj.angle) * (proj.size * 6 * max(0.1, ratio))
 
                     for other_id, other_p in self.players.items():
                         if pid != other_id and other_p.alive:
-                            if math.hypot(p.x - other_p.x, p.y - other_p.y) < p.size:
-                                if p.size >= other_p.size * 1.25:
+                            dist = math.hypot(p.x - other_p.x, p.y - other_p.y)
+                            min_dist = p.size + (15 if p.shield_time > 0 else 0) + (15 if other_p.shield_time > 0 else 0)
+                            if dist < min_dist and (p.shield_time > 0 or other_p.shield_time > 0):
+                                ang = math.atan2(p.y - other_p.y, p.x - other_p.x)
+                                p.kb_dx += math.cos(ang) * 2
+                                p.kb_dy += math.sin(ang) * 2
+                                continue
+
+                            if dist < p.size:
+                                if p.size >= other_p.size * 1.25 and other_p.shield_time <= 0:
                                     other_p.alive = False
                                     p.target_size += other_p.size * 0.5
                                     self.spawn_burst(other_p.x, other_p.y, other_p.size * 0.5, other_p.size)
@@ -503,12 +531,13 @@ async def handle_client(websocket):
                 if 'command' in cmd:
                     if cmd['command'] == 'ready':
                         p.ready = True
-                    elif cmd['command'] == 'shoot' and p.alive:
+                    elif cmd['command'] == 'shoot' and p.alive and p.stun_timer <= 0:
                         current_time = time.time()
-                        if current_time - p.last_shoot_time >= 10:
+                        cooldown = 0 if p.shoot_time > 0 else 10
+                        if current_time - p.last_shoot_time >= cooldown:
                             cost = p.size / 8
                             if p.size - cost >= START_SIZE:
-                                p.last_shoot_time = current_time 
+                                p.last_shoot_time = current_time if p.shoot_time <= 0 else 0 
                                 p.size -= cost
                                 p.target_size -= cost
                                 proj_size = (p.size + cost) / 4 
@@ -517,6 +546,17 @@ async def handle_client(websocket):
                                 py = p.y + math.sin(cmd['angle']) * spawn_dist
                                 proj = Projectile(p_id, px, py, cmd['angle'], proj_size)
                                 room.projectiles.append(proj)
+                    elif cmd['command'] == 'use_pu' and p.alive:
+                        pu = cmd.get('pu')
+                        if pu == "shield" and p.pu_shield:
+                            p.pu_shield = 0
+                            p.shield_time = 600
+                        elif pu == "shoot" and p.pu_shoot:
+                            p.pu_shoot = 0
+                            p.shoot_time = 300
+                        elif pu == "speed" and p.pu_speed:
+                            p.pu_speed = 0
+                            p.speed_time = 600
                     elif cmd['command'] == 'move':
                         p.set_movement(cmd)
     except websockets.exceptions.ConnectionClosed:
