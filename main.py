@@ -79,9 +79,10 @@ TOGGLE_BTN_RECT = pygame.Rect(WIDTH - 225, 15, 135, 35)
 # Smaller back button placed in the true top-right corner
 BACK_BTN_RECT = pygame.Rect(WIDTH - 80, 15, 65, 30)
 
-PU_SHIELD_RECT = pygame.Rect(WIDTH - 240, HEIGHT - 220, 50, 50)
-PU_SHOOT_RECT = pygame.Rect(WIDTH - 180, HEIGHT - 220, 50, 50)
-PU_SPEED_RECT = pygame.Rect(WIDTH - 120, HEIGHT - 220, 50, 50)
+# Shifted powerups higher (HEIGHT - 320) so they don't overlap with the aiming joystick's drag radius
+PU_SHIELD_RECT = pygame.Rect(WIDTH - 240, HEIGHT - 320, 50, 50)
+PU_SHOOT_RECT = pygame.Rect(WIDTH - 180, HEIGHT - 320, 50, 50)
+PU_SPEED_RECT = pygame.Rect(WIDTH - 120, HEIGHT - 320, 50, 50)
 use_textures = False
 shared_ray_surf = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
 offline_engine = None
@@ -788,13 +789,21 @@ def draw_game(move_active, move_angle, move_pos, aim_active, aim_angle, aim_pos,
             color = YELLOWISH_WHITE if p['id'] == my_id else (240, 240, 200)
             pygame.draw.circle(screen, color, (sx, sy), scaled_size)
 
-        # Powerup Visuals & Stun Bar
+        # Powerup Visuals (Glows and Shields) & Stun Bar
+        if p.get('shoot_time', 0) > 0 or p.get('speed_time', 0) > 0:
+            glow_radius = scaled_size + int(15 * zoom)
+            glow_surf = pygame.Surface((glow_radius * 2, glow_radius * 2), pygame.SRCALPHA)
+            if p.get('shoot_time', 0) > 0:
+                pygame.draw.circle(glow_surf, (255, 0, 0, 80), (glow_radius, glow_radius), glow_radius)
+            if p.get('speed_time', 0) > 0:
+                pygame.draw.circle(glow_surf, (150, 0, 255, 80), (glow_radius, glow_radius), glow_radius)
+            screen.blit(glow_surf, (sx - glow_radius, sy - glow_radius))
+
         if p.get('shield_time', 0) > 0:
-            pygame.draw.circle(screen, (50, 255, 50), (sx, sy), scaled_size + int(15 * zoom), 4)
-        if p.get('shoot_time', 0) > 0:
-            pygame.draw.circle(screen, (255, 50, 50), (sx, sy), scaled_size + int(5 * zoom), 3)
-        if p.get('speed_time', 0) > 0:
-            pygame.draw.circle(screen, (200, 50, 255), (sx, sy), scaled_size + int(5 * zoom), 3)
+            shield_radius = scaled_size + int(15 * zoom)
+            # Draw thick glowing green ring
+            pygame.draw.circle(screen, (50, 255, 50), (sx, sy), shield_radius, max(3, int(4 * zoom)))
+            pygame.draw.circle(screen, (150, 255, 150), (sx, sy), shield_radius - 2, max(1, int(2 * zoom)))
 
         if p.get('stun_timer', 0) > 0:
             bar_w = 40
@@ -906,14 +915,29 @@ def draw_game(move_active, move_angle, move_pos, aim_active, aim_angle, aim_pos,
 
     if me and me['alive'] and gamestate.get('started') and me['size'] >= 50:
         if me.get('pu_shield'):
-            pygame.draw.circle(screen, (50, 255, 50), PU_SHIELD_RECT.center, 25)
-            screen.blit(font_small.render("SHLD", True, BLACK), (PU_SHIELD_RECT.centerx - 18, PU_SHIELD_RECT.centery - 8))
+            pygame.draw.circle(screen, (50, 200, 50), PU_SHIELD_RECT.center, 25)
+            pygame.draw.circle(screen, WHITE, PU_SHIELD_RECT.center, 25, 2)
+            # Shield Icon (Vector Crest)
+            cx, cy = PU_SHIELD_RECT.center
+            pts = [(cx - 10, cy - 10), (cx + 10, cy - 10), (cx + 10, cy + 5), (cx, cy + 15), (cx - 10, cy + 5)]
+            pygame.draw.polygon(screen, WHITE, pts)
+            
         if me.get('pu_shoot'):
-            pygame.draw.circle(screen, (255, 50, 50), PU_SHOOT_RECT.center, 25)
-            screen.blit(font_small.render("SHT", True, WHITE), (PU_SHOOT_RECT.centerx - 15, PU_SHOOT_RECT.centery - 8))
+            pygame.draw.circle(screen, (200, 50, 50), PU_SHOOT_RECT.center, 25)
+            pygame.draw.circle(screen, WHITE, PU_SHOOT_RECT.center, 25, 2)
+            # Crosshair Icon (Vector Circle & Lines)
+            cx, cy = PU_SHOOT_RECT.center
+            pygame.draw.circle(screen, WHITE, (cx, cy), 12, 2)
+            pygame.draw.line(screen, WHITE, (cx - 16, cy), (cx + 16, cy), 2)
+            pygame.draw.line(screen, WHITE, (cx, cy - 16), (cx, cy + 16), 2)
+            
         if me.get('pu_speed'):
-            pygame.draw.circle(screen, (200, 50, 255), PU_SPEED_RECT.center, 25)
-            screen.blit(font_small.render("SPD", True, WHITE), (PU_SPEED_RECT.centerx - 15, PU_SPEED_RECT.centery - 8))
+            pygame.draw.circle(screen, (150, 50, 200), PU_SPEED_RECT.center, 25)
+            pygame.draw.circle(screen, WHITE, PU_SPEED_RECT.center, 25, 2)
+            # Lightning Bolt Icon (Vector Polygon)
+            cx, cy = PU_SPEED_RECT.center
+            pts = [(cx + 5, cy - 12), (cx - 8, cy + 2), (cx + 2, cy + 2), (cx - 5, cy + 12), (cx + 8, cy - 2), (cx - 2, cy - 2)]
+            pygame.draw.polygon(screen, WHITE, pts)
 
     if me and me['alive'] and gamestate.get('started'):
         KNOB_RADIUS = 25
