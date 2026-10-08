@@ -499,9 +499,13 @@ async def receive_data():
     global app_state, client
     if sys.platform == "emscripten":
         while app_state in ["GAME", "WINNER"]:
-            while len(msg_queue) > 0:
+            if len(msg_queue) > 0:
+                # Grab the absolute latest state and discard any backed-up stale frames
+                # This prevents the browser tab from freezing in a WebSocket death spiral!
+                latest_msg = msg_queue[-1]
+                msg_queue.clear()
                 try:
-                    process_payload(msg_queue.pop(0))
+                    process_payload(latest_msg)
                 except Exception:
                     pass
             await asyncio.sleep(0.01)
