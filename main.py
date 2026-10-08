@@ -79,10 +79,10 @@ TOGGLE_BTN_RECT = pygame.Rect(WIDTH - 225, 15, 135, 35)
 # Smaller back button placed in the true top-right corner
 BACK_BTN_RECT = pygame.Rect(WIDTH - 80, 15, 65, 30)
 
-# Shifted powerups higher (HEIGHT - 320) so they don't overlap with the aiming joystick's drag radius
-PU_SHIELD_RECT = pygame.Rect(WIDTH - 240, HEIGHT - 320, 50, 50)
-PU_SHOOT_RECT = pygame.Rect(WIDTH - 180, HEIGHT - 320, 50, 50)
-PU_SPEED_RECT = pygame.Rect(WIDTH - 120, HEIGHT - 320, 50, 50)
+# Powerups temporarily disabled
+# PU_SHIELD_RECT = pygame.Rect(WIDTH - 240, HEIGHT - 320, 50, 50)
+# PU_SHOOT_RECT = pygame.Rect(WIDTH - 180, HEIGHT - 320, 50, 50)
+# PU_SPEED_RECT = pygame.Rect(WIDTH - 120, HEIGHT - 320, 50, 50)
 use_textures = False
 shared_ray_surf = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
 offline_engine = None
@@ -118,8 +118,8 @@ class OfflineEngine:
         self.players.append({
             "id": 0, "x": 0, "y": 0, "size": START_SIZE, "target_size": START_SIZE, "angle": 0, "alive": True,
             "name": get_name(0), "is_aiming": False, "aim_angle": 0, "kb_dx": 0, "kb_dy": 0, "vx": 0, "vy": 0,
-            "last_shoot": 0, "is_moving": False, "is_bot": False, "stun_timer": 0,
-            "pu_shield": 1, "pu_shoot": 1, "pu_speed": 1, "shield_time": 0, "shoot_time": 0, "speed_time": 0
+            "last_shoot": 0, "is_moving": False, "is_bot": False, "stun_timer": 0
+            # "pu_shield": 1, "pu_shoot": 1, "pu_speed": 1, "shield_time": 0, "shoot_time": 0, "speed_time": 0
         })
         
         # Bots
@@ -130,8 +130,8 @@ class OfflineEngine:
                 "id": i, "x": r * math.cos(a), "y": r * math.sin(a), "size": START_SIZE, "target_size": START_SIZE,
                 "angle": 0, "alive": True, "name": get_name(i) + " [BOT]", "is_aiming": False,
                 "aim_angle": 0, "kb_dx": 0, "kb_dy": 0, "vx": 0, "vy": 0, "last_shoot": 0, "is_moving": True,
-                "is_bot": True, "stun_timer": 0,
-                "pu_shield": 0, "pu_shoot": 0, "pu_speed": 0, "shield_time": 0, "shoot_time": 0, "speed_time": 0
+                "is_bot": True, "stun_timer": 0
+                # "pu_shield": 0, "pu_shoot": 0, "pu_speed": 0, "shield_time": 0, "shoot_time": 0, "speed_time": 0
             })
 
     def spawn_burst(self, x, y, total_value, radius):
@@ -142,31 +142,22 @@ class OfflineEngine:
             self.particles.append([x + math.cos(a) * r, y + math.sin(a) * r, 5])
 
     def update(self, moving, angle, aiming, aim_angle, shoot, use_pu=None):
-        for p in self.players:
-            if p["shield_time"] > 0: p["shield_time"] -= 1
-            if p["shoot_time"] > 0: p["shoot_time"] -= 1
-            if p["speed_time"] > 0: p["speed_time"] -= 1
+        # Powerup logic disabled
+        # for p in self.players:
+        #     if p["shield_time"] > 0: p["shield_time"] -= 1
+        #     if p["shoot_time"] > 0: p["shoot_time"] -= 1
+        #     if p["speed_time"] > 0: p["speed_time"] -= 1
 
         me = self.players[0]
         if me["alive"]:
-            if use_pu == "shield" and me["pu_shield"]:
-                me["pu_shield"] = 0
-                me["shield_time"] = 600
-            elif use_pu == "shoot" and me["pu_shoot"]:
-                me["pu_shoot"] = 0
-                me["shoot_time"] = 300
-            elif use_pu == "speed" and me["pu_speed"]:
-                me["pu_speed"] = 0
-                me["speed_time"] = 600
-
             me["is_moving"] = moving
             me["angle"] = angle
             me["is_aiming"] = aiming
             me["aim_angle"] = aim_angle
             
-            cooldown = 0 if me["shoot_time"] > 0 else 10
-            if shoot and me["stun_timer"] <= 0 and time.time() - me["last_shoot"] >= cooldown and me["size"] - (me["size"]/8) >= START_SIZE:
-                me["last_shoot"] = time.time() if me["shoot_time"] <= 0 else 0
+            # cooldown = 0 if me["shoot_time"] > 0 else 10
+            if shoot and me["stun_timer"] <= 0 and time.time() - me["last_shoot"] >= 10 and me["size"] - (me["size"]/8) >= START_SIZE:
+                me["last_shoot"] = time.time()
                 cost = me["size"] / 8
                 me["size"] -= cost
                 me["target_size"] -= cost
@@ -233,7 +224,7 @@ class OfflineEngine:
             p["kb_dx"] *= 0.85
             p["kb_dy"] *= 0.85
 
-            active_vel = 10 if p["speed_time"] > 0 else 5
+            active_vel = 5 # 10 if p["speed_time"] > 0 else 5
             tx = 0
             ty = 0
 
@@ -293,7 +284,7 @@ class OfflineEngine:
             if not p["alive"]: continue
 
             if math.hypot(p["x"], p["y"]) > self.ring:
-                p["size"] -= 0.05
+                p["size"] -= 0.5  # Reverted from 0.05 back to original faster melt rate
                 p["target_size"] = p["size"]
                 if p["size"] <= 5: p["alive"] = False
 
@@ -304,9 +295,9 @@ class OfflineEngine:
 
             for proj in self.projectiles[:]:
                 if proj[4] != p["id"] and proj[5] > 0:
-                    if math.hypot(p["x"] - proj[0], p["y"] - proj[1]) < p["size"] + proj[2] + (15 if p["shield_time"] > 0 else 0):
+                    if math.hypot(p["x"] - proj[0], p["y"] - proj[1]) < p["size"] + proj[2]: # + (15 if p.get("shield_time",0) > 0 else 0):
                         proj[5] = 0
-                        if p["shield_time"] > 0: continue
+                        # if p.get("shield_time",0) > 0: continue
                         if proj[2] > p["size"]:
                             p["alive"] = False
                             self.spawn_burst(p["x"], p["y"], p["size"], p["size"])
@@ -319,15 +310,15 @@ class OfflineEngine:
             for other_p in self.players:
                 if p["id"] != other_p["id"] and other_p["alive"]:
                     dist = math.hypot(p["x"] - other_p["x"], p["y"] - other_p["y"])
-                    min_dist = p["size"] + (15 if p["shield_time"] > 0 else 0) + (15 if other_p["shield_time"] > 0 else 0)
-                    if dist < min_dist and (p["shield_time"] > 0 or other_p["shield_time"] > 0):
-                        ang = math.atan2(p["y"] - other_p["y"], p["x"] - other_p["x"])
-                        p["kb_dx"] += math.cos(ang) * 2
-                        p["kb_dy"] += math.sin(ang) * 2
-                        continue
+                    # min_dist = p["size"] + (15 if p.get("shield_time",0) > 0 else 0) + (15 if other_p.get("shield_time",0) > 0 else 0)
+                    # if dist < min_dist and (p.get("shield_time",0) > 0 or other_p.get("shield_time",0) > 0):
+                    #     ang = math.atan2(p["y"] - other_p["y"], p["x"] - other_p["x"])
+                    #     p["kb_dx"] += math.cos(ang) * 2
+                    #     p["kb_dy"] += math.sin(ang) * 2
+                    #     continue
 
                     if dist < p["size"]:
-                        if p["size"] >= other_p["size"] * 1.25 and other_p["shield_time"] <= 0:
+                        if p["size"] >= other_p["size"] * 1.25: # and other_p.get("shield_time",0) <= 0:
                             other_p["alive"] = False
                             p["target_size"] += other_p["size"] * 0.5
                             self.spawn_burst(other_p["x"], other_p["y"], other_p["size"] * 0.5, other_p["size"])
@@ -789,21 +780,20 @@ def draw_game(move_active, move_angle, move_pos, aim_active, aim_angle, aim_pos,
             color = YELLOWISH_WHITE if p['id'] == my_id else (240, 240, 200)
             pygame.draw.circle(screen, color, (sx, sy), scaled_size)
 
-        # Powerup Visuals (Glows and Shields) & Stun Bar
-        if p.get('shoot_time', 0) > 0 or p.get('speed_time', 0) > 0:
-            glow_radius = scaled_size + int(15 * zoom)
-            glow_surf = pygame.Surface((glow_radius * 2, glow_radius * 2), pygame.SRCALPHA)
-            if p.get('shoot_time', 0) > 0:
-                pygame.draw.circle(glow_surf, (255, 0, 0, 80), (glow_radius, glow_radius), glow_radius)
-            if p.get('speed_time', 0) > 0:
-                pygame.draw.circle(glow_surf, (150, 0, 255, 80), (glow_radius, glow_radius), glow_radius)
-            screen.blit(glow_surf, (sx - glow_radius, sy - glow_radius))
-
-        if p.get('shield_time', 0) > 0:
-            shield_radius = scaled_size + int(15 * zoom)
-            # Draw thick glowing green ring
-            pygame.draw.circle(screen, (50, 255, 50), (sx, sy), shield_radius, max(3, int(4 * zoom)))
-            pygame.draw.circle(screen, (150, 255, 150), (sx, sy), shield_radius - 2, max(1, int(2 * zoom)))
+        # Powerups Disabled
+        # if p.get('shoot_time', 0) > 0 or p.get('speed_time', 0) > 0:
+        #     glow_radius = scaled_size + int(15 * zoom)
+        #     glow_surf = pygame.Surface((glow_radius * 2, glow_radius * 2), pygame.SRCALPHA)
+        #     if p.get('shoot_time', 0) > 0:
+        #         pygame.draw.circle(glow_surf, (255, 0, 0, 80), (glow_radius, glow_radius), glow_radius)
+        #     if p.get('speed_time', 0) > 0:
+        #         pygame.draw.circle(glow_surf, (150, 0, 255, 80), (glow_radius, glow_radius), glow_radius)
+        #     screen.blit(glow_surf, (sx - glow_radius, sy - glow_radius))
+        # 
+        # if p.get('shield_time', 0) > 0:
+        #     shield_radius = scaled_size + int(15 * zoom)
+        #     pygame.draw.circle(screen, (50, 255, 50), (sx, sy), shield_radius, max(3, int(4 * zoom)))
+        #     pygame.draw.circle(screen, (150, 255, 150), (sx, sy), shield_radius - 2, max(1, int(2 * zoom)))
 
         if p.get('stun_timer', 0) > 0:
             bar_w = 40
@@ -913,31 +903,29 @@ def draw_game(move_active, move_angle, move_pos, aim_active, aim_angle, aim_pos,
         b_text = font_small.render("BACK", True, WHITE)
         screen.blit(b_text, (BACK_BTN_RECT.centerx - b_text.get_width() // 2, BACK_BTN_RECT.centery - b_text.get_height() // 2))
 
-    if me and me['alive'] and gamestate.get('started') and me['size'] >= 50:
-        if me.get('pu_shield'):
-            pygame.draw.circle(screen, (50, 200, 50), PU_SHIELD_RECT.center, 25)
-            pygame.draw.circle(screen, WHITE, PU_SHIELD_RECT.center, 25, 2)
-            # Shield Icon (Vector Crest)
-            cx, cy = PU_SHIELD_RECT.center
-            pts = [(cx - 10, cy - 10), (cx + 10, cy - 10), (cx + 10, cy + 5), (cx, cy + 15), (cx - 10, cy + 5)]
-            pygame.draw.polygon(screen, WHITE, pts)
-            
-        if me.get('pu_shoot'):
-            pygame.draw.circle(screen, (200, 50, 50), PU_SHOOT_RECT.center, 25)
-            pygame.draw.circle(screen, WHITE, PU_SHOOT_RECT.center, 25, 2)
-            # Crosshair Icon (Vector Circle & Lines)
-            cx, cy = PU_SHOOT_RECT.center
-            pygame.draw.circle(screen, WHITE, (cx, cy), 12, 2)
-            pygame.draw.line(screen, WHITE, (cx - 16, cy), (cx + 16, cy), 2)
-            pygame.draw.line(screen, WHITE, (cx, cy - 16), (cx, cy + 16), 2)
-            
-        if me.get('pu_speed'):
-            pygame.draw.circle(screen, (150, 50, 200), PU_SPEED_RECT.center, 25)
-            pygame.draw.circle(screen, WHITE, PU_SPEED_RECT.center, 25, 2)
-            # Lightning Bolt Icon (Vector Polygon)
-            cx, cy = PU_SPEED_RECT.center
-            pts = [(cx + 5, cy - 12), (cx - 8, cy + 2), (cx + 2, cy + 2), (cx - 5, cy + 12), (cx + 8, cy - 2), (cx - 2, cy - 2)]
-            pygame.draw.polygon(screen, WHITE, pts)
+    # Powerup UI Buttons Disabled
+    # if me and me['alive'] and gamestate.get('started') and me['size'] >= 50:
+    #     if me.get('pu_shield'):
+    #         pygame.draw.circle(screen, (50, 200, 50), PU_SHIELD_RECT.center, 25)
+    #         pygame.draw.circle(screen, WHITE, PU_SHIELD_RECT.center, 25, 2)
+    #         cx, cy = PU_SHIELD_RECT.center
+    #         pts = [(cx - 10, cy - 10), (cx + 10, cy - 10), (cx + 10, cy + 5), (cx, cy + 15), (cx - 10, cy + 5)]
+    #         pygame.draw.polygon(screen, WHITE, pts)
+    #         
+    #     if me.get('pu_shoot'):
+    #         pygame.draw.circle(screen, (200, 50, 50), PU_SHOOT_RECT.center, 25)
+    #         pygame.draw.circle(screen, WHITE, PU_SHOOT_RECT.center, 25, 2)
+    #         cx, cy = PU_SHOOT_RECT.center
+    #         pygame.draw.circle(screen, WHITE, (cx, cy), 12, 2)
+    #         pygame.draw.line(screen, WHITE, (cx - 16, cy), (cx + 16, cy), 2)
+    #         pygame.draw.line(screen, WHITE, (cx, cy - 16), (cx, cy + 16), 2)
+    #         
+    #     if me.get('pu_speed'):
+    #         pygame.draw.circle(screen, (150, 50, 200), PU_SPEED_RECT.center, 25)
+    #         pygame.draw.circle(screen, WHITE, PU_SPEED_RECT.center, 25, 2)
+    #         cx, cy = PU_SPEED_RECT.center
+    #         pts = [(cx + 5, cy - 12), (cx - 8, cy + 2), (cx + 2, cy + 2), (cx - 5, cy + 12), (cx + 8, cy - 2), (cx - 2, cy - 2)]
+    #         pygame.draw.polygon(screen, WHITE, pts)
 
     if me and me['alive'] and gamestate.get('started'):
         KNOB_RADIUS = 25
@@ -1126,23 +1114,23 @@ async def main():
                 sx, sy = touch["start"]
                 cx, cy = touch["current"]
 
-                # 1. Check Powerups (Using start pos to ensure it was clicked directly)
-                if me and me['size'] >= 50:
-                    if me.get('pu_shield') and PU_SHIELD_RECT.collidepoint(sx, sy):
-                        if app_state == "GAME": asyncio.create_task(send({"command": "use_pu", "pu": "shield"}))
-                        pending_pu_command = "shield"
-                        me['pu_shield'] = 0
-                        continue
-                    if me.get('pu_shoot') and PU_SHOOT_RECT.collidepoint(sx, sy):
-                        if app_state == "GAME": asyncio.create_task(send({"command": "use_pu", "pu": "shoot"}))
-                        pending_pu_command = "shoot"
-                        me['pu_shoot'] = 0
-                        continue
-                    if me.get('pu_speed') and PU_SPEED_RECT.collidepoint(sx, sy):
-                        if app_state == "GAME": asyncio.create_task(send({"command": "use_pu", "pu": "speed"}))
-                        pending_pu_command = "speed"
-                        me['pu_speed'] = 0
-                        continue
+                # 1. Check Powerups (Disabled for now)
+                # if me and me['size'] >= 50:
+                #     if me.get('pu_shield') and PU_SHIELD_RECT.collidepoint(sx, sy):
+                #         if app_state == "GAME": asyncio.create_task(send({"command": "use_pu", "pu": "shield"}))
+                #         pending_pu_command = "shield"
+                #         me['pu_shield'] = 0
+                #         continue
+                #     if me.get('pu_shoot') and PU_SHOOT_RECT.collidepoint(sx, sy):
+                #         if app_state == "GAME": asyncio.create_task(send({"command": "use_pu", "pu": "shoot"}))
+                #         pending_pu_command = "shoot"
+                #         me['pu_shoot'] = 0
+                #         continue
+                #     if me.get('pu_speed') and PU_SPEED_RECT.collidepoint(sx, sy):
+                #         if app_state == "GAME": asyncio.create_task(send({"command": "use_pu", "pu": "speed"}))
+                #         pending_pu_command = "speed"
+                #         me['pu_speed'] = 0
+                #         continue
 
                 # 2. Left Joystick (Must originate near the joystick center)
                 if math.hypot(sx - MOVE_JOY_CENTER[0], sy - MOVE_JOY_CENTER[1]) <= JOY_RADIUS * 2.5:
