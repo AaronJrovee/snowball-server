@@ -420,6 +420,7 @@ async def connect_to_server():
     
     try:
         if sys.platform == "emscripten":
+            msg_queue.clear()
             client = window.eval(f"new WebSocket('{url}')")
             window.ws_client = client
             window.ws_on_message = on_message
@@ -1078,6 +1079,8 @@ async def main():
                     elif (app_state == "OFFLINE_GAME" or not gamestate.get('started')) and BACK_BTN_RECT.collidepoint(ui_click_pos):
                         app_state = "MENU"
                         gamestate = {}
+                        visual_players.clear()
+                        msg_queue.clear()
                         if client:
                             try:
                                 if sys.platform == "emscripten":
