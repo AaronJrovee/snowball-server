@@ -64,6 +64,7 @@ winner_announcement = ""
 winner_display_start = 0
 
 msg_queue = [] 
+_zombie_proxies = [] # Safeguard to prevent PyProxy GC Wasm crashes
 
 # Menu Animation Variables
 menu_snowball = {"x": -100, "y": 50, "angle": 0, "size": 60, "vx": 4, "vy": 1.5}
@@ -472,6 +473,8 @@ async def connect_to_server():
     except Exception as e:
         print(f"Could not connect: {e}")
         server_status = "UNREACHABLE"
+        if sys.platform == "emscripten" and client is not None:
+            _zombie_proxies.append(client) # Prevent timeout crashes
         client = None
         app_state = "MENU"
 
@@ -1084,8 +1087,8 @@ async def main():
                         if client:
                             try:
                                 if sys.platform == "emscripten":
-                                    # Safely sever the Python/JS proxy link before closing to prevent Fatal PyProxy GC Crashes
-                                    window.eval("if(window.ws_client) { window.ws_client.onmessage = null; window.ws_client.close(); window.ws_client = null; }")
+                                    window.eval("if(window.ws_client) { window.ws_client.close(); }")
+                                    _zombie_proxies.append(client) # Keep Python proxy alive so Wasm doesn't crash on JS async close
                                 else:
                                     asyncio.create_task(client.close())
                             except: pass
