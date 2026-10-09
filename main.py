@@ -1130,7 +1130,8 @@ async def main():
 
         # Evaluate Active Touch/Mouse Inputs for Dual Joysticks
         current_inputs = list(active_touches.values())
-        if mouse_active:
+        # Prevent Pygame's emulated mouse from "crossing streams" with multi-touch coordinates
+        if mouse_active and len(active_touches) == 0:
             current_inputs.append({"start": mouse_start, "current": pygame.mouse.get_pos()})
             
         move_active = False
@@ -1196,7 +1197,7 @@ async def main():
                 
                 # Allow Left-Click to shoot IF they didn't click on the left movement joystick or UI
                 left_click_shoot = False
-                if mouse_active:
+                if mouse_active and len(active_touches) == 0:
                     dist_to_move_joy = math.hypot(mouse_start[0] - MOVE_JOY_CENTER[0], mouse_start[1] - MOVE_JOY_CENTER[1])
                     
                     # Ensure the click didn't start on any UI buttons
@@ -1209,8 +1210,8 @@ async def main():
                 if can_shoot and (keys[pygame.K_SPACE] or pygame.mouse.get_pressed()[2] or left_click_shoot):
                     aim_active = True
                     aim_angle = math.atan2(my - HEIGHT // 2, mx - WIDTH // 2)
-                else:
-                    # Visually track the mouse cursor when just walking around
+                elif len(active_touches) == 0:
+                    # Visually track the mouse cursor when just walking around (ONLY ON PC)
                     aim_angle = math.atan2(my - HEIGHT // 2, mx - WIDTH // 2)
 
         if app_state == "MENU":
