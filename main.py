@@ -367,6 +367,8 @@ async def send(data):
             else:
                 await client.send(msg)
         except Exception:
+            if sys.platform == "emscripten" and client is not None:
+                _zombie_proxies.append(client)
             client = None
             server_status = "UNREACHABLE"
             app_state = "MENU"
@@ -474,7 +476,17 @@ async def connect_to_server():
         print(f"Could not connect: {e}")
         server_status = "UNREACHABLE"
         if sys.platform == "emscripten" and client is not None:
-            _zombie_proxies.append(client) # Prevent timeout crashes
+            _zombie_proxies.append(client)
+            try:
+                window.eval("""
+                    if (window.ws_client) {
+                        var old_ws = window.ws_client;
+                        window.ws_client = null;
+                        old_ws.onmessage = null;
+                        old_ws.close();
+                    }
+                """)
+            except: pass
         client = None
         app_state = "MENU"
 
@@ -1087,8 +1099,17 @@ async def main():
                         if client:
                             try:
                                 if sys.platform == "emscripten":
-                                    window.eval("if(window.ws_client) { window.ws_client.close(); }")
-                                    _zombie_proxies.append(client) # Keep Python proxy alive so Wasm doesn't crash on JS async close
+                                    # Completely nuke the JavaScript references so the async loops can't crash on them
+                                    window.eval("""
+                                        if (window.ws_client) {
+                                            var old_ws = window.ws_client;
+                                            window.ws_client = null;
+                                            window.ws_on_message = null;
+                                            old_ws.onmessage = null;
+                                            old_ws.close();
+                                        }
+                                    """)
+                                    _zombie_proxies.append(client)
                                 else:
                                     asyncio.create_task(client.close())
                             except: pass
