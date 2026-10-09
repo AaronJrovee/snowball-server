@@ -354,6 +354,8 @@ class OfflineEngine:
 # ==============================================================================
 # NETWORK & DRAWING
 # ==============================================================================
+_js_initialized = False
+
 def on_message(event):
     msg_queue.append(str(event.data))
 
@@ -374,7 +376,7 @@ async def send(data):
             app_state = "MENU"
             
 async def connect_to_server():
-    global client, my_id, app_state, server_status
+    global client, my_id, app_state, server_status, _js_initialized
     
     # --- CLIENT-SIDE BANDWIDTH CHECK ---
     try:
@@ -426,16 +428,21 @@ async def connect_to_server():
             msg_queue.clear()
             client = window.eval(f"new WebSocket('{url}')")
             window.ws_client = client
-            window.ws_on_message = on_message
-            client.onmessage = window.ws_on_message
             
-            window.eval("""
-            window.send_ws = function(msg) {
-                if (window.ws_client && window.ws_client.readyState === 1) {
-                    window.ws_client.send(msg);
+            # --- CRITICAL FIX: Only create the PyProxy bridge ONCE ---
+            if not _js_initialized:
+                window.ws_on_message = on_message
+                window.eval("""
+                window.send_ws = function(msg) {
+                    if (window.ws_client && window.ws_client.readyState === 1) {
+                        window.ws_client.send(msg);
+                    }
                 }
-            }
-            """)
+                """)
+                _zombie_proxies.append(window.ws_on_message) # Lock it in memory forever
+                _js_initialized = True
+                
+            client.onmessage = window.ws_on_message
             
             while client.readyState == 0:
                 await asyncio.sleep(0.1)
@@ -483,7 +490,9 @@ async def connect_to_server():
                         var old_ws = window.ws_client;
                         window.ws_client = null;
                         old_ws.onmessage = null;
-                        old_ws.close();
+                        old_ws.onerror = null;
+                        old_ws.onclose = null;
+                        try { old_ws.close(); } catch(e) {}
                     }
                 """)
             except: pass
@@ -1099,14 +1108,14 @@ async def main():
                         if client:
                             try:
                                 if sys.platform == "emscripten":
-                                    # Completely nuke the JavaScript references so the async loops can't crash on them
                                     window.eval("""
                                         if (window.ws_client) {
                                             var old_ws = window.ws_client;
                                             window.ws_client = null;
-                                            window.ws_on_message = null;
                                             old_ws.onmessage = null;
-                                            old_ws.close();
+                                            old_ws.onerror = null;
+                                            old_ws.onclose = null;
+                                            try { old_ws.close(); } catch(e) {}
                                         }
                                     """)
                                     _zombie_proxies.append(client)
