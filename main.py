@@ -1152,6 +1152,43 @@ async def main():
                     aim_pos = (cx, cy)
                     aim_angle = math.atan2(cy - AIM_JOY_CENTER[1], cx - AIM_JOY_CENTER[0])
 
+            # --- PC KEYBOARD & MOUSE OVERRIDES ---
+            keys = pygame.key.get_pressed()
+            kb_dx, kb_dy = 0, 0
+            # Supports both WASD and Arrow Keys simultaneously!
+            if keys[pygame.K_w] or keys[pygame.K_UP]: kb_dy -= 1
+            if keys[pygame.K_s] or keys[pygame.K_DOWN]: kb_dy += 1
+            if keys[pygame.K_a] or keys[pygame.K_LEFT]: kb_dx -= 1
+            if keys[pygame.K_d] or keys[pygame.K_RIGHT]: kb_dx += 1
+            
+            if kb_dx != 0 or kb_dy != 0:
+                move_active = True
+                move_angle = math.atan2(kb_dy, kb_dx)
+                
+            # If the right virtual joystick is NOT currently being dragged, use PC mouse aiming
+            is_using_right_joystick = aim_active
+            if not is_using_right_joystick and pygame.mouse.get_focused():
+                mx, my = pygame.mouse.get_pos()
+                
+                # Allow Left-Click to shoot IF they didn't click on the left movement joystick or UI
+                left_click_shoot = False
+                if mouse_active:
+                    dist_to_move_joy = math.hypot(mouse_start[0] - MOVE_JOY_CENTER[0], mouse_start[1] - MOVE_JOY_CENTER[1])
+                    
+                    # Ensure the click didn't start on any UI buttons
+                    clicked_ui = BACK_BTN_RECT.collidepoint(mouse_start) or TOGGLE_BTN_RECT.collidepoint(mouse_start)
+                    
+                    if dist_to_move_joy > JOY_RADIUS * 2.5 and not clicked_ui:
+                        left_click_shoot = True
+
+                # Press Spacebar, Right-Click, or Left-Click to charge shot
+                if can_shoot and (keys[pygame.K_SPACE] or pygame.mouse.get_pressed()[2] or left_click_shoot):
+                    aim_active = True
+                    aim_angle = math.atan2(my - HEIGHT // 2, mx - WIDTH // 2)
+                else:
+                    # Visually track the mouse cursor when just walking around
+                    aim_angle = math.atan2(my - HEIGHT // 2, mx - WIDTH // 2)
+
         if app_state == "MENU":
             draw_menu()
             
