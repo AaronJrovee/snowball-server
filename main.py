@@ -483,18 +483,9 @@ async def connect_to_server():
         print(f"Could not connect: {e}")
         server_status = "UNREACHABLE"
         if sys.platform == "emscripten" and client is not None:
-            _zombie_proxies.append(client)
             try:
-                window.eval("""
-                    if (window.ws_client) {
-                        var old_ws = window.ws_client;
-                        window.ws_client = null;
-                        old_ws.onmessage = null;
-                        old_ws.onerror = null;
-                        old_ws.onclose = null;
-                        try { old_ws.close(); } catch(e) {}
-                    }
-                """)
+                client.onmessage = None
+                client.close()
             except: pass
         client = None
         app_state = "MENU"
@@ -1108,17 +1099,9 @@ async def main():
                         if client:
                             try:
                                 if sys.platform == "emscripten":
-                                    window.eval("""
-                                        if (window.ws_client) {
-                                            var old_ws = window.ws_client;
-                                            window.ws_client = null;
-                                            old_ws.onmessage = null;
-                                            old_ws.onerror = null;
-                                            old_ws.onclose = null;
-                                            try { old_ws.close(); } catch(e) {}
-                                        }
-                                    """)
-                                    _zombie_proxies.append(client)
+                                    # Directly disconnect the proxy socket natively
+                                    client.onmessage = None
+                                    client.close()
                                 else:
                                     asyncio.create_task(client.close())
                             except: pass
@@ -1287,7 +1270,10 @@ async def main():
 
     if client:
         try:
-            await client.close()
+            if sys.platform == "emscripten":
+                client.close()
+            else:
+                await client.close()
         except:
             pass
     pygame.quit()
