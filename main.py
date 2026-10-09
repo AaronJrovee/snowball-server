@@ -65,6 +65,9 @@ winner_display_start = 0
 
 msg_queue = [] 
 _zombie_proxies = [] # Safeguard to prevent PyProxy GC Wasm crashes
+screen_shake = 0 # Visual FX
+target_x, target_y = 0, 0 # Global camera tracking
+zoom = 1.0
 
 # Menu Animation Variables
 menu_snowball = {"x": -100, "y": 50, "angle": 0, "size": 60, "vx": 4, "vy": 1.5}
@@ -482,12 +485,12 @@ async def connect_to_server():
     except Exception as e:
         print(f"Could not connect: {e}")
         server_status = "UNREACHABLE"
-        if sys.platform == "emscripten" and client is not None:
-            try:
-                client.onmessage = None
-                client.close()
-            except: pass
-        client = None
+        try:
+            if sys.platform == "emscripten":
+                window.eval("if (window.ws_client) window.ws_client.close();")
+            elif client:
+                asyncio.create_task(client.close())
+        except: pass
         app_state = "MENU"
 
 def process_payload(data):
@@ -653,7 +656,7 @@ def draw_winner():
     screen.blit(sub_text, (WIDTH // 2 - sub_text.get_width() // 2, HEIGHT // 2 + 20))
 
 def draw_game(move_active, move_angle, move_pos, aim_active, aim_angle, aim_pos, can_shoot):
-    global use_textures, visual_players
+    global use_textures, visual_players, screen_shake, target_x, target_y, zoom
 
     if not gamestate:
         screen.fill(BG_COLOR)
@@ -692,6 +695,26 @@ def draw_game(move_active, move_angle, move_pos, aim_active, aim_angle, aim_pos,
             vp['aim_angle'] += diff_aim * lerp_factor
             
             vp['size'] = sp['size']
+
+            # --- PARTICLE TRAIL LOGIC ---
+            if 'trail_particles' not in vp: vp['trail_particles'] = []
+            
+            # Spawn new scattered particles if moving
+            is_moving = abs(sp['x'] - vp['x']) > 0.5 or abs(sp['y'] - vp['y']) > 0.5
+            if sp['alive'] and is_moving:
+                for _ in range(random.randint(1, 2)):
+                    # Randomize starting position slightly within the snowball's footprint
+                    offset_x = random.uniform(-vp['size'] * 0.4, vp['size'] * 0.4)
+                    offset_y = random.uniform(-vp['size'] * 0.4, vp['size'] * 0.4)
+                    p_size = random.uniform(2, 4)
+                    # Format: [x, y, radius, current_life, max_life]
+                    vp['trail_particles'].append([vp['x'] + offset_x, vp['y'] + offset_y, p_size, 30, 30])
+            
+            # Decay and clean up old particles
+            for pt in vp['trail_particles'][:]:
+                pt[3] -= 1 
+                if pt[3] <= 0:
+                    vp['trail_particles'].remove(pt)
     # ------------------------------
 
     # Determine camera target using SMOOTHED coordinates
@@ -742,10 +765,17 @@ def draw_game(move_active, move_angle, move_pos, aim_active, aim_angle, aim_pos,
         screen.fill(BG_COLOR)
 
     def to_screen(world_x, world_y):
+        # Apply screen shake offset
+        shake_x = random.uniform(-screen_shake, screen_shake) if screen_shake > 0 else 0
+        shake_y = random.uniform(-screen_shake, screen_shake) if screen_shake > 0 else 0
         return (
-            int((world_x - target_x) * zoom + WIDTH // 2),
-            int((world_y - target_y) * zoom + HEIGHT // 2)
+            int((world_x - target_x) * zoom + WIDTH // 2 + shake_x),
+            int((world_y - target_y) * zoom + HEIGHT // 2 + shake_y)
         )
+
+    # Decay the screen shake over time
+    if screen_shake > 0:
+        screen_shake = max(0, screen_shake - 1.5)
 
     ring_r = gamestate.get('ring', 2000)
     center_screen = to_screen(0, 0)
@@ -791,7 +821,32 @@ def draw_game(move_active, move_angle, move_pos, aim_active, aim_angle, aim_pos,
         vp = visual_players[p['id']]
         sx, sy = to_screen(vp['x'], vp['y'])
         scaled_size = max(1, int(vp['size'] * zoom))
+
+        # 1. DRAW FIXED 2.5D SHADOW FIRST
+        # A static, flattened ellipse pushed to the bottom edge creates a solid floor illusion
+        shadow_w = int(scaled_size * 1.8)
+        shadow_h = int(scaled_size * 0.8)
         
+        shadow_x = sx
+        shadow_y = sy + int(scaled_size * 0.75) # Pushed directly down to the base of the ball
+        
+        shadow_surf = pygame.Surface((shadow_w, shadow_h), pygame.SRCALPHA)
+        pygame.draw.ellipse(shadow_surf, (0, 0, 0, 60), (0, 0, shadow_w, shadow_h))
+        screen.blit(shadow_surf, (shadow_x - shadow_w // 2, shadow_y - shadow_h // 2))
+
+        # 2. DRAW FADING PARTICLE TRAIL SECOND
+        if 'trail_particles' in vp:
+            for pt in vp['trail_particles']:
+                ptx, pty = to_screen(pt[0], pt[1])
+                p_radius = max(1, int(pt[2] * zoom))
+                
+                alpha = int((pt[3] / pt[4]) * 200) 
+                
+                p_surf = pygame.Surface((p_radius * 2, p_radius * 2), pygame.SRCALPHA)
+                pygame.draw.circle(p_surf, (255, 255, 255, alpha), (p_radius, p_radius), p_radius)
+                screen.blit(p_surf, (ptx - p_radius, pty - p_radius))
+        
+        # 3. DRAW THE ACTUAL BALL THIRD (Layered on top of shadows and trails)
         if snow_sprite and use_textures:
             current_img = pygame.transform.scale(snow_sprite, (scaled_size * 2, scaled_size * 2))
             img_rect = current_img.get_rect(center=(sx, sy))
@@ -989,7 +1044,7 @@ def draw_game(move_active, move_angle, move_pos, aim_active, aim_angle, aim_pos,
 # MAIN LOOP
 # ==============================================================================
 async def main():
-    global app_state, gamestate, my_id, offline_engine, winner_announcement, winner_display_start, use_textures, client
+    global app_state, gamestate, my_id, offline_engine, winner_announcement, winner_display_start, use_textures, client, screen_shake
     running = True
     last_angle = 0
     last_moving = False
@@ -1003,6 +1058,8 @@ async def main():
     
     current_music_state = None
     last_projectile_count = 0
+    last_projectiles = []
+    last_alive_players = {}
     
     active_touches = {}
     mouse_active = False
@@ -1035,11 +1092,46 @@ async def main():
                 pass
         # ---------------------------
 
-        # --- SHOOT SOUND TRACKER ---
-        current_projs = len(gamestate.get('projectiles', []))
+        # --- SHOOT SOUND TRACKER & ON-SCREEN SHAKE ---
+        current_proj_list = gamestate.get('projectiles', [])
+        current_projs = len(current_proj_list)
+        current_alive_players = {p['id']: p for p in gamestate.get('players', []) if p['alive']}
+        
         if current_projs > last_projectile_count and shoot_sound:
             shoot_sound.play()
+            
+        # 1. Check for on-screen projectile impacts
+        if current_projs < last_projectile_count: 
+            for old_p in last_projectiles:
+                is_missing = True
+                for curr_p in current_proj_list:
+                    # If a projectile moved less than 50 pixels between frames, it's the same one
+                    if math.hypot(old_p[0] - curr_p[0], old_p[1] - curr_p[1]) < 50:
+                        is_missing = False
+                        break
+                
+                if is_missing:
+                    # Check if the missing projectile's final location was visible on screen
+                    sx = int((old_p[0] - target_x) * zoom + WIDTH // 2)
+                    sy = int((old_p[1] - target_y) * zoom + HEIGHT // 2)
+                    
+                    # Includes a 100px buffer so impacts just off-screen still cause a rumble
+                    if -100 <= sx <= WIDTH + 100 and -100 <= sy <= HEIGHT + 100:
+                        screen_shake = min(20, screen_shake + 12)
+                        break # Only shake once per frame
+                        
+        # 2. Check for on-screen player eliminations (eating)
+        for pid, old_p in last_alive_players.items():
+            if pid not in current_alive_players:
+                sx = int((old_p['x'] - target_x) * zoom + WIDTH // 2)
+                sy = int((old_p['y'] - target_y) * zoom + HEIGHT // 2)
+                if -100 <= sx <= WIDTH + 100 and -100 <= sy <= HEIGHT + 100:
+                    screen_shake = min(30, screen_shake + 20) # Bigger shake for eliminations!
+                    break
+
         last_projectile_count = current_projs
+        last_projectiles = list(current_proj_list)
+        last_alive_players = current_alive_players
         # ---------------------------
 
         now = pygame.time.get_ticks()
@@ -1096,16 +1188,14 @@ async def main():
                         gamestate = {}
                         visual_players.clear()
                         msg_queue.clear()
-                        if client:
-                            try:
-                                if sys.platform == "emscripten":
-                                    # Directly disconnect the proxy socket natively
-                                    client.onmessage = None
-                                    client.close()
-                                else:
-                                    asyncio.create_task(client.close())
-                            except: pass
-                            client = None
+                        try:
+                            if sys.platform == "emscripten":
+                                window.eval("if (window.ws_client) window.ws_client.close();")
+                            elif client:
+                                asyncio.create_task(client.close())
+                        except: pass
+                        # We intentionally DO NOT set `client = None` here, 
+                        # mimicking the exact logic of your end-of-game screen!
                     
                     elif not gamestate.get('started') and app_state == "GAME":
                         human_players = [p for p in gamestate.get('players', []) if not p.get('is_bot', False)]
