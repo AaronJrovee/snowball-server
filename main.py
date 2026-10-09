@@ -1084,7 +1084,8 @@ async def main():
                         if client:
                             try:
                                 if sys.platform == "emscripten":
-                                    window.eval("if(window.ws_client) window.ws_client.close();")
+                                    # Safely sever the Python/JS proxy link before closing to prevent Fatal PyProxy GC Crashes
+                                    window.eval("if(window.ws_client) { window.ws_client.onmessage = null; window.ws_client.close(); window.ws_client = null; }")
                                 else:
                                     asyncio.create_task(client.close())
                             except: pass
