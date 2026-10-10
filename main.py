@@ -69,6 +69,13 @@ screen_shake = 0 # Visual FX
 target_x, target_y = 0, 0 # Global camera tracking
 zoom = 1.0
 
+# Highlights Variables
+game_history = []
+highlight_events = []
+highlight_clips = []
+current_clip_idx = 0
+playback_timer = 0
+
 # Menu Animation Variables
 menu_snowball = {"x": -100, "y": 50, "angle": 0, "size": 60, "vx": 4, "vy": 1.5}
 menu_snowflakes = [[random.randint(0, WIDTH), random.randint(0, HEIGHT), random.uniform(1, 4), random.uniform(1, 3)] for _ in range(100)]
@@ -651,11 +658,9 @@ def draw_winner():
     screen.blit(overlay, (0, 0))
     
     w_text = font_large.render(winner_announcement, True, WHITE)
-    sub_text = font.render("Returning to menu shortly...", True, (200, 200, 200))
-    screen.blit(w_text, (WIDTH // 2 - w_text.get_width() // 2, HEIGHT // 2 - 40))
-    screen.blit(sub_text, (WIDTH // 2 - sub_text.get_width() // 2, HEIGHT // 2 + 20))
+    screen.blit(w_text, (WIDTH // 2 - w_text.get_width() // 2, HEIGHT // 2 - 20))
 
-def draw_game(move_active, move_angle, move_pos, aim_active, aim_angle, aim_pos, can_shoot):
+def draw_game(move_active, move_angle, move_pos, aim_active, aim_angle, aim_pos, can_shoot, dt=0.033):
     global use_textures, visual_players, screen_shake, target_x, target_y, zoom
 
     if not gamestate:
@@ -675,8 +680,8 @@ def draw_game(move_active, move_angle, move_pos, aim_active, aim_angle, aim_pos,
             capture_sound.play()
         del visual_players[pid]
 
-    # Glide visual positions toward server positions
-    lerp_factor = 0.3  # 0.3 means moving 30% of the remaining distance per frame
+    # Frame-rate independent lerping using exponential decay formula
+    lerp_factor = 1.0 - math.exp(-10.0 * dt)
     for pid, sp in current_server_players.items():
         if pid not in visual_players:
             # Snap immediately if we just saw them
@@ -815,7 +820,9 @@ def draw_game(move_active, move_angle, move_pos, aim_active, aim_angle, aim_pos,
             pygame.draw.circle(screen, (255, 255, 255), (sx, sy), scaled_p_size)
 
     # Render Players (Using smoothed visual data)
-    for p in gamestate.get('players', []):
+    # Sort players so that the camera subject (my_id) is always drawn last (on top!)
+    sorted_draw_players = sorted(gamestate.get('players', []), key=lambda p: 1 if p['id'] == my_id else 0)
+    for p in sorted_draw_players:
         if not p['alive'] or p['id'] not in visual_players: continue
 
         vp = visual_players[p['id']]
@@ -1066,7 +1073,8 @@ async def main():
     mouse_start = (0, 0)
     
     while running:
-        clock.tick(FPS)
+        # dt is the time in seconds since the last frame
+        dt = clock.tick(FPS) / 1000.0 
         
         # --- MUSIC STATE MACHINE ---
         if app_state == "MENU":
@@ -1075,6 +1083,8 @@ async def main():
             target_music = "LOBBY"
         elif app_state in ["GAME", "OFFLINE_GAME"] and gamestate.get('started'):
             target_music = "GAME"
+        elif app_state == "HIGHLIGHTS":
+            target_music = "LOBBY"
         else:
             target_music = current_music_state
             
@@ -1092,46 +1102,98 @@ async def main():
                 pass
         # ---------------------------
 
-        # --- SHOOT SOUND TRACKER & ON-SCREEN SHAKE ---
-        current_proj_list = gamestate.get('projectiles', [])
-        current_projs = len(current_proj_list)
+        # --- SHOOT SOUND TRACKER & ELIMINATION FOCUS ---
+        raw_projs = gamestate.get('projectiles', [])
+        current_projs = len(raw_projs)
         current_alive_players = {p['id']: p for p in gamestate.get('players', []) if p['alive']}
         
+        # 1. Assign an "Owner" to every projectile client-side
+        current_proj_list = []
+        for c_pr in raw_projs:
+            owner_id = None
+            # Try to match it to a projectile from the previous frame
+            for old_p in last_projectiles:
+                if math.hypot(c_pr[0] - old_p[0], c_pr[1] - old_p[1]) < 50:
+                    owner_id = old_p[3]
+                    break
+            
+            # If it's brand new, the closest player is the shooter
+            if owner_id is None:
+                min_dist = float('inf')
+                for pid, p in current_alive_players.items():
+                    dist = math.hypot(c_pr[0] - p['x'], c_pr[1] - p['y'])
+                    if dist < min_dist:
+                        min_dist = dist
+                        owner_id = pid
+            
+            current_proj_list.append([c_pr[0], c_pr[1], c_pr[2], owner_id])
+            
         if current_projs > last_projectile_count and shoot_sound:
             shoot_sound.play()
             
-        # 1. Check for on-screen projectile impacts
+        # 2. Check for on-screen projectile impacts
+        missing_projectiles = []
         if current_projs < last_projectile_count: 
             for old_p in last_projectiles:
                 is_missing = True
                 for curr_p in current_proj_list:
-                    # If a projectile moved less than 50 pixels between frames, it's the same one
                     if math.hypot(old_p[0] - curr_p[0], old_p[1] - curr_p[1]) < 50:
                         is_missing = False
                         break
                 
                 if is_missing:
-                    # Check if the missing projectile's final location was visible on screen
+                    missing_projectiles.append(old_p)
                     sx = int((old_p[0] - target_x) * zoom + WIDTH // 2)
                     sy = int((old_p[1] - target_y) * zoom + HEIGHT // 2)
-                    
-                    # Includes a 100px buffer so impacts just off-screen still cause a rumble
                     if -100 <= sx <= WIDTH + 100 and -100 <= sy <= HEIGHT + 100:
                         screen_shake = min(20, screen_shake + 12)
-                        break # Only shake once per frame
                         
-        # 2. Check for on-screen player eliminations (eating)
+        # 3. Check for player eliminations (Eating OR Shooting)
         for pid, old_p in last_alive_players.items():
             if pid not in current_alive_players:
                 sx = int((old_p['x'] - target_x) * zoom + WIDTH // 2)
                 sy = int((old_p['y'] - target_y) * zoom + HEIGHT // 2)
                 if -100 <= sx <= WIDTH + 100 and -100 <= sy <= HEIGHT + 100:
-                    screen_shake = min(30, screen_shake + 20) # Bigger shake for eliminations!
-                    break
+                    screen_shake = min(30, screen_shake + 20) 
+                    
+                killer_id = None
+                
+                # A) Did a snowball kill them?
+                for m_proj in missing_projectiles:
+                    dist_to_player = math.hypot(m_proj[0] - old_p['x'], m_proj[1] - old_p['y'])
+                    # 30px buffer accounts for frame-lag between impact and elimination
+                    if dist_to_player < old_p['size'] + m_proj[2] + 30: 
+                        killer_id = m_proj[3] # The Shooter!
+                        break
+                
+                # B) If no snowball hit them, it was a direct eating kill
+                if killer_id is None:
+                    min_dist = float('inf')
+                    for c_pid, c_p in current_alive_players.items():
+                        dist = math.hypot(old_p['x'] - c_p['x'], old_p['y'] - c_p['y'])
+                        if dist < min_dist:
+                            min_dist = dist
+                            killer_id = c_pid # The Eater!
+                            
+                if killer_id is not None:
+                    highlight_events.append({'killer': killer_id, 'timestamp': now})
 
         last_projectile_count = current_projs
-        last_projectiles = list(current_proj_list)
+        last_projectiles = current_proj_list
         last_alive_players = current_alive_players
+        # ---------------------------
+        # ---------------------------
+        
+        # --- RECORD GAME HISTORY ---
+        if gamestate.get('started') and app_state in ["GAME", "OFFLINE_GAME"]:
+            frame = {
+                'players': [p.copy() for p in gamestate.get('players', [])],
+                'projectiles': [list(pr) for pr in current_proj_list],
+                'particles': [list(pt) for pt in gamestate.get('particles', [])],
+                'ring': gamestate.get('ring', 2000),
+                'started': True
+            }
+            game_history.append((now, frame))
         # ---------------------------
 
         now = pygame.time.get_ticks()
@@ -1179,6 +1241,14 @@ async def main():
                         offline_engine = OfflineEngine()
                         my_id = 0
 
+                elif (app_state == "HIGHLIGHTS" or app_state == "WINNER_FINAL") and BACK_BTN_RECT.collidepoint(ui_click_pos):
+                    app_state = "MENU"
+                    gamestate = {}
+                    game_history.clear()
+                    highlight_events.clear()
+                    visual_players.clear()
+                    msg_queue.clear()
+
                 elif app_state in ["GAME", "OFFLINE_GAME"]:
                     if TOGGLE_BTN_RECT.collidepoint(ui_click_pos):
                         use_textures = not use_textures
@@ -1186,6 +1256,8 @@ async def main():
                     elif (app_state == "OFFLINE_GAME" or not gamestate.get('started')) and BACK_BTN_RECT.collidepoint(ui_click_pos):
                         app_state = "MENU"
                         gamestate = {}
+                        game_history.clear()
+                        highlight_events.clear()
                         visual_players.clear()
                         msg_queue.clear()
                         try:
@@ -1303,12 +1375,98 @@ async def main():
             draw_connecting()
             
         elif app_state == "WINNER":
-            draw_game(False, 0, (0, 0), False, 0, (0, 0), False)
+            draw_game(False, 0, (0, 0), False, 0, (0, 0), False, dt)
             draw_winner()
+            if now - winner_display_start > 3000:
+                if highlight_events and game_history:
+                    app_state = "HIGHLIGHTS"
+                    highlight_clips = []
+                    
+                    # 1. Sort chronologically
+                    highlight_events.sort(key=lambda e: e['timestamp'])
+                    
+                    # 2. Merge overlapping clips to prevent repeating the same footage
+                    for ev in highlight_events:
+                        pre_roll = 2500
+                        post_roll = 1500
+                        start_time = ev['timestamp'] - pre_roll
+                        end_time = ev['timestamp'] + post_roll
+                        
+                        if not highlight_clips:
+                            highlight_clips.append({'start': start_time, 'end': end_time, 'focus': ev['killer']})
+                        else:
+                            last_clip = highlight_clips[-1]
+                            # If this event overlaps with the last clip, merge them into one continuous take!
+                            if start_time <= last_clip['end'] + 1000:
+                                last_clip['end'] = max(last_clip['end'], end_time)
+                                last_clip['focus'] = ev['killer'] # Snap camera to the new killer
+                            else:
+                                highlight_clips.append({'start': start_time, 'end': end_time, 'focus': ev['killer']})
+                    
+                    # 3. Extend the very last clip so the final elimination has time to breathe
+                    if highlight_clips:
+                        highlight_clips[-1]['end'] += 1500
+                        
+                    current_clip_idx = 0
+                    playback_timer = highlight_clips[0]['start']
+                else:
+                    app_state = "MENU"
+                    gamestate = {}
+                    game_history.clear()
+                    highlight_events.clear()
+                    visual_players.clear()
+                    msg_queue.clear()
+
+        elif app_state == "HIGHLIGHTS":
+            playback_timer += clock.get_time()
+            current_clip = highlight_clips[current_clip_idx]
+            
+            # Move to next clip or exit
+            if playback_timer > current_clip['end']:
+                current_clip_idx += 1
+                if current_clip_idx >= len(highlight_clips):
+                    app_state = "WINNER_FINAL"
+                    winner_display_start = pygame.time.get_ticks()
+                    continue
+                else:
+                    current_clip = highlight_clips[current_clip_idx]
+                    playback_timer = current_clip['start']
+
+            # Find the nearest recorded frame
+            best_frame = game_history[0][1]
+            for t, frame in game_history:
+                if t > playback_timer:
+                    break
+                best_frame = frame
+            gamestate = best_frame
+
+            # Trick the camera into following the killer's perspective
+            original_my_id = my_id
+            my_id = current_clip['focus']
+            draw_game(False, 0, (0, 0), False, 0, (0, 0), False, dt)
+            my_id = original_my_id
+
+            # Draw Replay UI
+            reel_txt = font_large.render("HIGHLIGHT REEL", True, RED)
+            screen.blit(reel_txt, (WIDTH // 2 - reel_txt.get_width() // 2, 30))
+            
+            pygame.draw.rect(screen, (200, 50, 50), BACK_BTN_RECT, border_radius=5)
+            b_text = font_small.render("SKIP", True, WHITE)
+            screen.blit(b_text, (BACK_BTN_RECT.centerx - b_text.get_width() // 2, BACK_BTN_RECT.centery - b_text.get_height() // 2))
+
+        elif app_state == "WINNER_FINAL":
+            draw_game(False, 0, (0, 0), False, 0, (0, 0), False, dt)
+            draw_winner()
+            
+            # Show the final winner text for 3 seconds then go to menu
             if now - winner_display_start > 3000:
                 app_state = "MENU"
                 gamestate = {}
-                
+                game_history.clear()
+                highlight_events.clear()
+                visual_players.clear()
+                msg_queue.clear()
+
         elif app_state == "OFFLINE_GAME" or app_state == "GAME":
             # Detect aim release to trigger shot
             if last_is_aiming and not aim_active:
@@ -1353,7 +1511,7 @@ async def main():
                     winner_display_start = pygame.time.get_ticks()
                     app_state = "WINNER"
 
-            draw_game(move_active, move_angle, move_pos, aim_active, aim_angle, aim_pos, can_shoot)
+            draw_game(move_active, move_angle, move_pos, aim_active, aim_angle, aim_pos, can_shoot, dt)
 
         pygame.display.flip()
         await asyncio.sleep(0)
