@@ -1403,9 +1403,10 @@ async def main():
                             else:
                                 highlight_clips.append({'start': start_time, 'end': end_time, 'focus': ev['killer']})
                     
-                    # 3. Extend the very last clip so the final elimination has time to breathe
-                    if highlight_clips:
-                        highlight_clips[-1]['end'] += 1500
+                    # 3. Remove the delay! Snap the final clip to end immediately upon the last elimination.
+                    if highlight_clips and highlight_events:
+                        # Adding just 100ms allows the exact impact frame and particle burst to render
+                        highlight_clips[-1]['end'] = highlight_events[-1]['timestamp'] + 100
                         
                     current_clip_idx = 0
                     playback_timer = highlight_clips[0]['start']
