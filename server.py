@@ -368,7 +368,8 @@ class Room:
                 for p in self.players.values():
                     p.update_position()
 
-                self.ring_radius = max(0, self.ring_radius - RING_SHRINK_RATE)
+                # Scale the shrink rate so the 30Hz server matches the 60 FPS client mathematically
+                self.ring_radius = max(0, self.ring_radius - (RING_SHRINK_RATE * (FPS / 30)))
 
                 for proj in self.projectiles[:]:
                     proj.update()
@@ -399,7 +400,7 @@ class Room:
                     if not p.alive: continue
 
                     if math.sqrt(p.x**2 + p.y**2) > self.ring_radius:
-                        p.size -= 0.05
+                        p.size -= 0.5  # Updated to match the faster offline melting rate
                         p.target_size = p.size
                         if p.size <= 5:
                             p.alive = False
