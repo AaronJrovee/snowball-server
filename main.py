@@ -915,6 +915,37 @@ def draw_game(move_active, move_angle, move_pos, aim_active, aim_angle, aim_pos,
         text_rect = name_surface.get_rect(center=(sx, sy - scaled_size - 15))
         screen.blit(name_surface, text_rect)
 
+    # --- OUT OF BOUNDS DIRECTIONAL ARROW ---
+    if me and me['alive'] and my_id in visual_players:
+        vp = visual_players[my_id]
+        # Check if the player has crossed the current ring boundary
+        if math.hypot(vp['x'], vp['y']) > ring_r:
+            # Calculate the exact angle pointing back to the arena center (0, 0)
+            angle_to_center = math.atan2(-vp['y'], -vp['x'])
+            sx, sy = to_screen(vp['x'], vp['y'])
+            scaled_size = max(1, int(vp['size'] * zoom))
+            
+            # Pulse the red color to communicate urgency
+            pulse = (math.sin(pygame.time.get_ticks() * 0.015) + 1) / 2
+            arrow_color = (255, int(80 * pulse), int(80 * pulse))
+            
+            # Project the arrow vertices outward from the snowball
+            dist_tip = scaled_size + (50 * zoom)
+            dist_base = scaled_size + (20 * zoom)
+            
+            tip_x = sx + math.cos(angle_to_center) * dist_tip
+            tip_y = sy + math.sin(angle_to_center) * dist_tip
+            
+            base_l_x = sx + math.cos(angle_to_center - 0.35) * dist_base
+            base_l_y = sy + math.sin(angle_to_center - 0.35) * dist_base
+            
+            base_r_x = sx + math.cos(angle_to_center + 0.35) * dist_base
+            base_r_y = sy + math.sin(angle_to_center + 0.35) * dist_base
+            
+            # Draw the filled arrow and a thick black outline for visibility
+            pygame.draw.polygon(screen, arrow_color, [(tip_x, tip_y), (base_l_x, base_l_y), (base_r_x, base_r_y)])
+            pygame.draw.polygon(screen, BLACK, [(tip_x, tip_y), (base_l_x, base_l_y), (base_r_x, base_r_y)], max(1, int(2 * zoom)))
+
     if is_spectating:
         spec_txt = font_large.render(f"SPECTATING: {spectated_name}", True, RED)
         screen.blit(spec_txt, (WIDTH // 2 - spec_txt.get_width() // 2, HEIGHT - 60))
