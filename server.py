@@ -467,19 +467,25 @@ class Room:
                     break
 
             self.frame_count += 1
-            state = {
-                "players": [p.to_dict() for p in self.players.values()],
-                "projectiles": [[int(pj.x), int(pj.y), int(pj.size)] for pj in self.projectiles],
-                "ring": int(self.ring_radius),
-                "started": self.game_started,
-                "lobby_time": remaining_time
-            }
             
-            if self.frame_count % 30 == 0:
-                state["particles"] = [[int(pt.x), int(pt.y), int(pt.size)] for pt in self.particles]
+            # Decouple Network from Physics: Broadcast 30 times a sec, but run math at 60 FPS!
+            if self.frame_count % 2 == 0:
+                state = {
+                    "players": [p.to_dict() for p in self.players.values()],
+                    "projectiles": [[int(pj.x), int(pj.y), int(pj.size)] for pj in self.projectiles],
+                    "ring": int(self.ring_radius),
+                    "started": self.game_started,
+                    "lobby_time": remaining_time
+                }
+                
+                # Send particles once a second to save bandwidth
+                if self.frame_count % FPS == 0:
+                    state["particles"] = [[int(pt.x), int(pt.y), int(pt.size)] for pt in self.particles]
 
-            await self.broadcast(state)
-            await asyncio.sleep(1 / 30)
+                await self.broadcast(state)
+                
+            # Sleep at 60 FPS so online movement speed exactly matches the offline engine
+            await asyncio.sleep(1 / FPS)
 
 rooms = {}
 _room_counter = 1
