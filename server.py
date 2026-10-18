@@ -171,26 +171,22 @@ class Player:
             self.size = self.target_size
 
     def to_dict(self):
-        return {
-            "id": self.id,
-            "x": int(self.x),
-            "y": int(self.y),
-            "size": int(self.size),
-            "angle": self.angle,
-            "alive": self.alive,
-            "ready": self.ready,
-            "name": self.name,
-            "is_aiming": self.is_aiming,
-            "aim_angle": self.aim_angle,
-            "is_bot": self.is_bot,
-            "pu_shield": self.pu_shield,
-            "pu_shoot": self.pu_shoot,
-            "pu_speed": self.pu_speed,
-            "shield_time": self.shield_time,
-            "shoot_time": self.shoot_time,
-            "speed_time": self.speed_time,
-            "stun_timer": self.stun_timer
-        }
+        # Pack data into a strict array instead of a dictionary to save bytes.
+        # Round angles to 2 decimal places to stop floating point bloat.
+        return [
+            self.id,
+            int(self.x),
+            int(self.y),
+            int(self.size),
+            round(self.angle, 2),
+            1 if self.alive else 0,
+            1 if self.ready else 0,
+            self.name,
+            1 if self.is_aiming else 0,
+            round(self.aim_angle, 2),
+            1 if self.is_bot else 0,
+            self.stun_timer
+        ]
 
 class Particle:
     def __init__(self, x, y, size=5):
